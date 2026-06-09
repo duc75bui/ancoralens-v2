@@ -771,14 +771,27 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
   const fieldPosAcc = has("Field & Pos Acc %")
     ? num("Field & Pos Acc %")
     : numericValue(groups.summaryStats.positionAccuracy);
-  const passThrough = has("Pass-Through %") ? num("Pass-Through %") : fieldAcc;
-
   // availability — distinguish "absent" from a legitimate 0 so we never fabricate a metric
   const docsAvail = has("Processed Docs");
   const accAvail = has("Field Acc %") || numericValue(groups.summaryStats.accuracy) > 0;
   const posAvail = has("Field & Pos Acc %") || numericValue(groups.summaryStats.positionAccuracy) > 0;
   const excAvail = has("Exceptional Batches");
-  const passAvail = has("Pass-Through %") || accAvail;
+
+  // Pipeline-health donut = straight-through processing. Prefer the explicit page-level
+  // Pass-Through % from the summary CSV; when that row is absent, derive a batch-level STP
+  // rate from exceptions ((total − exception) / total); only then fall back to field accuracy.
+  const canDeriveStp = excAvail && totalBatches > 0;
+  const passThrough = has("Pass-Through %")
+    ? num("Pass-Through %")
+    : canDeriveStp
+      ? ((totalBatches - exceptionalBatches) / totalBatches) * 100
+      : fieldAcc;
+  const passThroughLabel = has("Pass-Through %")
+    ? "pass-through"
+    : canDeriveStp
+      ? "straight-through"
+      : "field accuracy";
+  const passAvail = has("Pass-Through %") || canDeriveStp || accAvail;
 
   // accuracy series: prefer per-training-pass accuracy; fall back to validation volume timeline
   const trainingTrend = groups.trainingPass
@@ -926,7 +939,7 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
             </div>
           </div>
           {passAvail ? (
-            <Donut value={passThrough} label={has("Pass-Through %") ? "pass-through" : "field accuracy"} accent="var(--lime)" />
+            <Donut value={passThrough} label={passThroughLabel} accent="var(--lime)" />
           ) : (
             <div className="chart-empty" style={{ color: "rgba(243,239,227,.6)" }}>
               Could not be loaded — insufficient data.
