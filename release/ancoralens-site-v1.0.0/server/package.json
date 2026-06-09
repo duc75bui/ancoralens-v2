@@ -1,0 +1,20 @@
+{
+  "name": "ancoralens-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AncoraLens unified server — serves the built frontend (../dist) and the SQL/AI API on one port.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "mssql": "^12.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
