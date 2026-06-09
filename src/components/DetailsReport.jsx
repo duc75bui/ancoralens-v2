@@ -85,6 +85,15 @@ function problemBadge(counts) {
   return null;
 }
 
+// Severity filter for the report toolbar: "all" keeps everything, "errors" keeps only
+// error fields, "warnings" keeps both warnings and errors. Mirrors countProblems' status
+// resolution so the filter and the problem badges agree on what counts as an error/warning.
+function matchesSeverity(row, severity) {
+  if (severity === "all") return true;
+  const kind = statusKind(row.FieldStatus || row.Status || row.Result || "");
+  return severity === "errors" ? kind === "error" : kind === "error" || kind === "warning";
+}
+
 function LineItemsTable({ lineItems, assignableOnly = false }) {
   const [expanded, setExpanded] = useState({});
   const { lines, columns } = useMemo(() => groupLineItems(lineItems), [lineItems]);
@@ -184,6 +193,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
   const [query, setQuery] = useState(() => savedState.query || "");
   const [trainingPass, setTrainingPass] = useState(() => savedState.trainingPass || "all");
   const [assignableOnly, setAssignableOnly] = useState(() => Boolean(savedState.assignableOnly));
+  const [severity, setSeverity] = useState(() => savedState.severity || "all");
   const [compact, setCompact] = useState(() => Boolean(savedState.compact));
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState(() => savedState.visibleColumns || null);
@@ -254,6 +264,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
       query,
       trainingPass,
       assignableOnly,
+      severity,
       compact,
       visibleColumns,
       expandedBatches,
@@ -261,7 +272,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
       sort,
       page
     });
-  }, [query, trainingPass, assignableOnly, compact, visibleColumns, expandedBatches, expandedLineItems, sort, page]);
+  }, [query, trainingPass, assignableOnly, severity, compact, visibleColumns, expandedBatches, expandedLineItems, sort, page]);
 
   const filteredRows = useMemo(() => {
     let rows = model.filteredRows;
@@ -271,6 +282,8 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
     }
 
     if (assignableOnly) rows = rows.filter(isAssignableField);
+
+    if (severity !== "all") rows = rows.filter((row) => matchesSeverity(row, severity));
 
     if (query.trim()) {
       const needle = query.toLowerCase();
@@ -288,7 +301,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
     }
 
     return rows;
-  }, [model.filteredRows, trainingPass, assignableOnly, query, sort]);
+  }, [model.filteredRows, trainingPass, assignableOnly, severity, query, sort]);
 
   useEffect(() => {
     if (didMountFilterReset.current) {
@@ -296,7 +309,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
     } else {
       didMountFilterReset.current = true;
     }
-  }, [query, trainingPass, assignableOnly, sort]);
+  }, [query, trainingPass, assignableOnly, severity, sort]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
 
@@ -321,8 +334,12 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
   const getLineItems = (batchId) => {
     const batch = model.batches.find((item) => item.id === batchId);
     if (!batch) return [];
-    if (trainingPass === "all") return batch.lineItemRows;
-    return batch.lineItemRows.filter((row) => String(row.TrainingPass || row.Pass || row.trainingPass || "") === trainingPass);
+    let items = batch.lineItemRows;
+    if (trainingPass !== "all") {
+      items = items.filter((row) => String(row.TrainingPass || row.Pass || row.trainingPass || "") === trainingPass);
+    }
+    if (severity !== "all") items = items.filter((row) => matchesSeverity(row, severity));
+    return items;
   };
 
   const toggleSort = (column) => {
@@ -418,6 +435,13 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
                   {pass}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="details-top-select">
+            <select value={severity} onChange={(event) => setSeverity(event.target.value)}>
+              <option value="all">All Fields</option>
+              <option value="warnings">Warnings &amp; Errors</option>
+              <option value="errors">Errors Only</option>
             </select>
           </label>
           <label className="details-chip">
