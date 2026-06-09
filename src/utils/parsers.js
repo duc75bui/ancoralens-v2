@@ -90,13 +90,42 @@ function findColumnLoose(row, names = []) {
   );
 }
 
+// Canonical FieldStatus codes from the Documentation glossary (the source of truth, see
+// DocumentationView GROUPS). Mapped explicitly because loose substring matching can't tell
+// these apart — positive tokens are embedded in negative codes ("match" ⊂ "TextMatchFail",
+// "valid" ⊂ "UnassignedValid"/"UnassignedInvalid"), which otherwise mis-reads real errors
+// and warnings as success. Keys are letters-only (case/space/punctuation-insensitive).
+const STATUS_CODE_KIND = {
+  correct: "success",
+  wronginput: "error",
+  textmatchfail: "error",
+  wrongassignment: "error",
+  misassignment: "warning",
+  wronglocation: "error",
+  wrongpage: "error",
+  wrongregion: "error",
+  unassignedvalid: "warning",
+  unassignedinvalid: "warning",
+  unknown: "warning",
+  unknowncapturedregion: "warning",
+  unknowntrueregion: "warning"
+};
+
 /** Classify a raw FieldStatus string into "success" | "error" | "warning" | "neutral". */
 export function statusKind(value) {
   const text = String(value || "").toLowerCase().trim();
   if (!text) return "neutral";
-  if (POSITIVE_STATUS.some((token) => text.includes(token)) || text === "valid") return "success";
+
+  // 1) Exact documented code wins (ignoring spaces/punctuation: "Wrong Input" -> "wronginput").
+  const code = text.replace(/[^a-z]/g, "");
+  if (STATUS_CODE_KIND[code]) return STATUS_CODE_KIND[code];
+
+  // 2) Keyword fallback for looser/legacy status strings. Negatives are checked before
+  //    positives so embedded positive substrings ("incorrect", "invalid", "mismatch") don't
+  //    win over the negative meaning.
   if (ERROR_STATUS.some((token) => text.includes(token))) return "error";
   if (WARNING_STATUS.some((token) => text.includes(token))) return "warning";
+  if (POSITIVE_STATUS.some((token) => text.includes(token))) return "success";
   return "warning";
 }
 
