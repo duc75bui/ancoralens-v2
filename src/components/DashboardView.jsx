@@ -11,9 +11,11 @@ import { motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowUpRight,
+  Banknote,
   BarChart3,
   Boxes,
   Crosshair,
+  Download,
   FileStack,
   FileText,
   FolderOpen,
@@ -23,7 +25,7 @@ import {
   PieChart as PieChartIcon,
   Users
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -89,7 +91,13 @@ const reveal = {
 };
 
 /* fires once the element scrolls into view (so below-the-fold charts animate on arrival) */
+// True while the dashboard is being rendered for PDF export. Consumed by useInView so every
+// lazily-revealed chart/count-up mounts and animates regardless of scroll position — otherwise
+// RevealChart (which renders null until in view) would leave blank gaps in the printed report.
+const PrintModeContext = createContext(false);
+
 function useInView(threshold = 0.2) {
+  const printing = useContext(PrintModeContext);
   const ref = useRef(null);
   const [inView, setInView] = useState(false);
 
@@ -113,7 +121,7 @@ function useInView(threshold = 0.2) {
     return () => observer.disconnect();
   }, [threshold, inView]);
 
-  return [ref, inView];
+  return [ref, inView || printing];
 }
 
 function useAnimatedNumber(target, duration = 950, active = true) {
@@ -753,7 +761,7 @@ function TrainingPassTable({ rows, onTrainingPassSelect }) {
   );
 }
 
-function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSelect, sessionInfo }) {
+function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSelect, sessionInfo, onExportPdf }) {
   const source = sessionInfo?.source;
   const sourceMeta = source
     ? [sessionInfo?.clientName, source.fileCount ? `${source.fileCount} files` : source.kind === "file" ? "single file" : null]
@@ -792,6 +800,19 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
       ? "straight-through"
       : "field accuracy";
   const passAvail = has("Pass-Through %") || canDeriveStp || accAvail;
+
+  // Labor savings — only surfaced when the summary CSV provides it. Prefer the field-level
+  // saving as the headline number and show the character-level saving as the footnote.
+  const laborChars = has("Labor Sav (Chars) %") ? num("Labor Sav (Chars) %") : null;
+  const laborFields = has("Labor Sav (Fields) %") ? num("Labor Sav (Fields) %") : null;
+  const laborAvail = laborChars !== null || laborFields !== null;
+  const laborValue = laborFields ?? laborChars ?? 0;
+  const laborFoot =
+    laborFields !== null && laborChars !== null
+      ? `${laborChars.toFixed(1)}% characters`
+      : laborFields !== null
+        ? "fields saved"
+        : "characters saved";
 
   // accuracy series: prefer per-training-pass accuracy; fall back to validation volume timeline
   const trainingTrend = groups.trainingPass
@@ -848,8 +869,12 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
             {processedDocs.toLocaleString()} processed documents.
           </p>
         </div>
-        {source && (
-          <div className="hero-right">
+        <div className="hero-right">
+          <button type="button" className="pdf-export-button no-print" onClick={onExportPdf}>
+            <Download size={15} />
+            Download PDF
+          </button>
+          {source && (
             <div className="data-source" title={`Loaded from ${source.name}`}>
               <span className="ds-icon">{source.kind === "file" ? <FileText size={16} /> : <FolderOpen size={16} />}</span>
               <div className="ds-text">
@@ -858,12 +883,12 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
                 {sourceMeta && <div className="ds-meta">{sourceMeta}</div>}
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </motion.div>
 
       {/* KPI row */}
-      <motion.div className="kpis" variants={reveal} initial="hidden" animate="visible">
+      <motion.div className={`kpis${laborAvail ? " kpis-5" : ""}`} variants={reveal} initial="hidden" animate="visible">
         <KpiCard
           label="Documents processed"
           icon={<FileStack size={15} />}
@@ -902,6 +927,17 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
           variant="dark"
           available={excAvail}
         />
+        {laborAvail && (
+          <KpiCard
+            label="Labor savings"
+            icon={<Banknote size={15} />}
+            value={laborValue}
+            decimals={1}
+            suffix="%"
+            foot={laborFoot}
+            available={laborAvail}
+          />
+        )}
       </motion.div>
 
       {/* Trend + pipeline health */}
@@ -1002,8 +1038,27 @@ export default function DashboardView({ data, detailsData, vendorData, onTrainin
     ...groups.regionTemplate.filter((item) => item.isPercentage)
   ];
 
+  const [printing, setPrinting] = useState(false);
+
+  // Export the dashboard to PDF via the browser's print pipeline (no extra deps, keeps text
+  // and SVG charts crisp). Flip on print mode so every lazily-revealed chart mounts, give the
+  // charts/count-ups a beat to settle, then open the print dialog and restore normal mode.
+  const handleExportPdf = () => {
+    if (printing) return;
+    setPrinting(true);
+    const previousTitle = document.title;
+    document.title = sessionInfo?.clientName ? `${sessionInfo.clientName} — AncoraLens Report` : "AncoraLens Report";
+
+    window.setTimeout(() => {
+      window.print();
+      document.title = previousTitle;
+      setPrinting(false);
+    }, 1200);
+  };
+
   return (
-    <motion.div className="dashboard-view" variants={dashboardContainer} initial="hidden" animate="visible">
+    <PrintModeContext.Provider value={printing}>
+    <motion.div className={`dashboard-view${printing ? " printing" : ""}`} variants={dashboardContainer} initial="hidden" animate="visible">
       {/* Editorial overview — leads the page */}
       <EditorialOverview
         groups={groups}
@@ -1011,6 +1066,7 @@ export default function DashboardView({ data, detailsData, vendorData, onTrainin
         docTypeData={docTypeData}
         onTrainingPassSelect={onTrainingPassSelect}
         sessionInfo={sessionInfo}
+        onExportPdf={handleExportPdf}
       />
 
       {/* Detailed analytics — full chart set, restyled */}
@@ -1076,5 +1132,6 @@ export default function DashboardView({ data, detailsData, vendorData, onTrainin
         </>
       )}
     </motion.div>
+    </PrintModeContext.Provider>
   );
 }

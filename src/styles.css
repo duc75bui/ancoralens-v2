@@ -1404,6 +1404,19 @@ code {
 
 /* KPI cards */
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+.kpis-5 { grid-template-columns: repeat(5, 1fr); }
+
+.pdf-export-button {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 15px; border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  background: var(--blue); color: #fff;
+  font-size: .8rem; font-weight: 700; letter-spacing: -0.01em; cursor: pointer;
+  box-shadow: 0 3px 10px rgba(43, 58, 232, .22);
+  transition: filter .15s ease, transform .15s ease;
+}
+.pdf-export-button:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.pdf-export-button:active { transform: translateY(0); }
 .kpi {
   position: relative; overflow: hidden;
   background: var(--card); border-radius: var(--radius-xl); padding: 22px 22px 20px;
@@ -1700,4 +1713,69 @@ code {
 @media (max-width: 640px) {
   .kpis { grid-template-columns: 1fr; }
   .hero h1 { font-size: clamp(30px, 9vw, 40px); }
+}
+
+/* ─────────────────────────── PDF / print report ───────────────────────────
+   Triggered by the dashboard "Download PDF" button (window.print). Goal: the
+   dashboard, faithfully but compactly, across as few pages as possible with no
+   widget split across a page break. PrintModeContext force-mounts every lazy
+   chart before the dialog opens; this stylesheet handles layout + visibility. */
+@media print {
+  @page { size: A4 portrait; margin: 10mm; }
+
+  /* render dark panels, colored cards and chart fills as-is (no auto color stripping) */
+  *, *::before, *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* drop app chrome + interactive-only affordances */
+  .app-sidebar,
+  .no-print,
+  .pdf-export-button { display: none !important; }
+
+  /* the app shell is a fixed-height, overflow-hidden flex column on screen — unlock it
+     so the whole dashboard flows onto multiple printed pages instead of being clipped */
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+  .app-container { display: block !important; height: auto !important; overflow: visible !important; }
+  .main-content {
+    overflow: visible !important; height: auto !important;
+    padding: 0 !important; background: #fff !important;
+  }
+  .main-content::before, .main-content::after { display: none !important; }
+  .dashboard-view { max-width: none !important; margin: 0 !important; padding: 0 !important; }
+
+  /* framer-motion leaves inline entrance opacity/transform on these wrappers; force the
+     settled state. Scoped to layout containers only — never the recharts SVG internals,
+     whose geometry relies on transforms. */
+  .dashboard-view, .al-page, .hero, .hero-right,
+  .kpis, .kpi, .grid, .grid > *, .dashboard-top, .stat-strip,
+  .dashboard-grid, .dashboard-grid > *, .gauge-grid, .gauge-grid > *,
+  .dashboard-motion-card, .dashboard-panel, .glass-panel, .panel,
+  .gauge-card, .stat-card, .section-title {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  /* keep every widget whole on a single page */
+  .kpi, .panel, .glass-panel, .gauge-card, .stat-card,
+  .dashboard-grid > *, .grid > *, .section-title {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+  .section-title { break-after: avoid !important; page-break-after: avoid !important; }
+
+  /* compact spacing so the report packs into fewer pages */
+  .kpis, .grid, .dashboard-top, .stat-strip, .dashboard-grid, .gauge-grid {
+    gap: 8px !important; margin-bottom: 10px !important;
+  }
+  .panel, .glass-panel, .dashboard-panel { padding: 11px !important; margin-bottom: 0 !important; overflow: visible !important; }
+  .hero { margin-bottom: 12px !important; }
+  .hero h1 { font-size: 26px !important; }
+  .al-page { margin-bottom: 10px !important; }
+  .section-title { margin: 12px 0 6px !important; }
+
+  /* let recharts scale down to the print column instead of overflowing the page */
+  .recharts-responsive-container { width: 100% !important; }
+  .recharts-wrapper, .recharts-surface { max-width: 100% !important; }
 }
