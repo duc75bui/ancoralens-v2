@@ -69,7 +69,7 @@ export default function Sidebar({
         <NavButton
           icon={<BarChart3 size={17} />}
           label="Dashboard"
-          active={activeView === "dashboard"}
+          active={activeView === "dashboard" || activeView === "passDashboard"}
           disabled={!hasData}
           onClick={() => setActiveView("dashboard")}
         />

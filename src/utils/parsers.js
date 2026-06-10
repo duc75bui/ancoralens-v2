@@ -75,6 +75,19 @@ export function findColumn(row, expectedName) {
   return Object.keys(row || {}).find((key) => key && key.toLowerCase().trim() === expected);
 }
 
+/**
+ * Extract a training-pass key (the pass number as a string) from a label or filename so the
+ * dashboard table row "Training Pass 1", the detail row's TrainingPass column, and a per-pass
+ * file "TrainingPass0_050230.csv" can all be matched to one another. Returns null when no pass
+ * number is present (e.g. "TrainingPassSummary.csv"). Note: per-pass files may be 0-indexed
+ * while the summary labels are 1-indexed — callers handle that off-by-one when resolving.
+ */
+export function matchPassKey(value) {
+  const text = String(value || "").toLowerCase();
+  const match = text.match(/training\s*pass[^0-9]*(\d+)/) || text.match(/\bpass[^0-9]*(\d+)/);
+  return match ? match[1] : null;
+}
+
 function normalizeColumnName(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }

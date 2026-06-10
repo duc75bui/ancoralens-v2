@@ -17,6 +17,7 @@ import SqlConnector from "./components/SqlConnector.jsx";
 import TemplateMatching from "./components/TemplateMatching.jsx";
 import UploadView from "./components/UploadView.jsx";
 import VendorReport from "./components/VendorReport.jsx";
+import { matchPassKey } from "./utils/parsers.js";
 
 const VIEW_MEMORY_KEY = "ancoralens:view-memory";
 
@@ -47,6 +48,8 @@ export default function App() {
   const [detailsData, setDetailsData] = useState(null);
   const [vendorData, setVendorData] = useState(null);
   const [templateData, setTemplateData] = useState(null);
+  const [trainingPassData, setTrainingPassData] = useState({});
+  const [activePass, setActivePass] = useState(null);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [viewMemory, setViewMemory] = useState(loadViewMemory);
 
@@ -58,7 +61,9 @@ export default function App() {
     sessionStorage.setItem(VIEW_MEMORY_KEY, JSON.stringify(viewMemory));
   }, [viewMemory]);
 
-  const hasData = Boolean(dashboardData || detailsData || vendorData || templateData);
+  const hasData = Boolean(
+    dashboardData || detailsData || vendorData || templateData || Object.keys(trainingPassData).length
+  );
 
   const updateViewMemory = (view, patch) => {
     setViewMemory((current) => ({
@@ -75,6 +80,21 @@ export default function App() {
     setActiveView("details");
   };
 
+  // Resolve the per-pass CSV rows for a clicked pass. Per-pass files may be 0-indexed while the
+  // summary labels are 1-indexed, so try the exact key, then ±1, before giving up.
+  const resolvePassRows = (trainingPassName) => {
+    const key = matchPassKey(trainingPassName);
+    if (key == null) return null;
+    const candidates = [key, String(Number(key) - 1), String(Number(key) + 1)];
+    const hit = candidates.find((candidate) => trainingPassData[candidate]);
+    return hit ? trainingPassData[hit] : null;
+  };
+
+  const openPassDashboard = (trainingPassName) => {
+    setActivePass(trainingPassName);
+    setActiveView("passDashboard");
+  };
+
   const handleDataLoaded = (type, payload, sessionPatch = null) => {
     switch (type) {
       case "dashboard":
@@ -83,6 +103,10 @@ export default function App() {
         break;
       case "details":
         setDetailsData(payload);
+        break;
+      case "trainingPass":
+        // payload = parsed rows, sessionPatch = the pass key (e.g. "0", "1")
+        setTrainingPassData((current) => ({ ...current, [sessionPatch]: payload }));
         break;
       case "vendor":
         setVendorData(payload);
@@ -98,6 +122,9 @@ export default function App() {
         if (payload.details) setDetailsData(payload.details);
         if (payload.vendor) setVendorData(payload.vendor);
         if (payload.template) setTemplateData(payload.template);
+        if (payload.trainingPasses && Object.keys(payload.trainingPasses).length) {
+          setTrainingPassData((current) => ({ ...current, ...payload.trainingPasses }));
+        }
         if (payload.session) setSessionInfo((current) => ({ ...current, ...payload.session }));
         break;
       default:
@@ -110,6 +137,8 @@ export default function App() {
     setDetailsData(null);
     setVendorData(null);
     setTemplateData(null);
+    setTrainingPassData({});
+    setActivePass(null);
     setSessionInfo(null);
     setViewMemory({});
     sessionStorage.removeItem(VIEW_MEMORY_KEY);
@@ -153,6 +182,7 @@ export default function App() {
               detailsData={detailsData}
               vendorData={vendorData}
               onTrainingPassSelect={openDetailsForTrainingPass}
+              onOpenPassDashboard={openPassDashboard}
             />
           ) : (
             <EmptyPanel
@@ -161,6 +191,35 @@ export default function App() {
               onUpload={() => setActiveView("upload")}
             />
           ))}
+
+        {activeView === "passDashboard" &&
+          (() => {
+            const passRows = resolvePassRows(activePass);
+            if (!passRows) {
+              return (
+                <EmptyPanel
+                  title={`No data loaded for ${activePass || "this training pass"}`}
+                  message='Upload its per-pass CSV ("TrainingPass*.csv") via the Training Pass tile or folder auto-load.'
+                  onUpload={() => setActiveView("upload")}
+                />
+              );
+            }
+            const passKey = matchPassKey(activePass);
+            const passDetails =
+              detailsData?.filter(
+                (row) => matchPassKey(row.TrainingPass || row.Pass || row.trainingPass || "") === passKey
+              ) || null;
+            return (
+              <DashboardView
+                sessionInfo={sessionInfo}
+                data={passRows}
+                detailsData={passDetails && passDetails.length ? passDetails : null}
+                vendorData={null}
+                onTrainingPassSelect={openDetailsForTrainingPass}
+                passContext={{ passName: activePass, onBack: () => setActiveView("dashboard") }}
+              />
+            );
+          })()}
 
         {activeView === "details" &&
           (detailsData ? (

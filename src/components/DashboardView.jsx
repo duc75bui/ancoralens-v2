@@ -14,6 +14,8 @@ import {
   Banknote,
   BarChart3,
   Boxes,
+  ChevronLeft,
+  ChevronRight,
   Crosshair,
   Download,
   FileStack,
@@ -671,7 +673,7 @@ function FieldAccuracyList({ fields }) {
   );
 }
 
-function TrainingPassTable({ rows, onTrainingPassSelect }) {
+function TrainingPassTable({ rows, onOpenPass }) {
   if (!rows.length) {
     return (
       <>
@@ -685,12 +687,13 @@ function TrainingPassTable({ rows, onTrainingPassSelect }) {
       </>
     );
   }
+  const interactive = typeof onOpenPass === "function";
   return (
     <>
       <div className="panel-head">
         <div>
           <div className="panel-title">Training pass performance</div>
-          <div className="panel-sub">field accuracy per pass · click to drill in</div>
+          <div className="panel-sub">{interactive ? "field accuracy per pass · open a pass dashboard" : "field accuracy per pass"}</div>
         </div>
       </div>
       <table className="tbl">
@@ -709,8 +712,8 @@ function TrainingPassTable({ rows, onTrainingPassSelect }) {
             return (
               <tr
                 key={p.name}
-                style={{ cursor: "pointer" }}
-                onClick={() => onTrainingPassSelect?.(p.name)}
+                style={interactive ? { cursor: "pointer" } : undefined}
+                onClick={interactive ? () => onOpenPass(p.name) : undefined}
               >
                 <td>
                   <div className="doc">
@@ -740,17 +743,19 @@ function TrainingPassTable({ rows, onTrainingPassSelect }) {
                   </span>
                 </td>
                 <td style={{ textAlign: "right" }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    style={{ padding: "7px 12px" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTrainingPassSelect?.(p.name);
-                    }}
-                  >
-                    Open <ArrowUpRight size={15} />
-                  </button>
+                  {interactive && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ padding: "7px 12px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenPass(p.name);
+                      }}
+                    >
+                      Open <ArrowUpRight size={15} />
+                    </button>
+                  )}
                 </td>
               </tr>
             );
@@ -761,7 +766,7 @@ function TrainingPassTable({ rows, onTrainingPassSelect }) {
   );
 }
 
-function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSelect, sessionInfo, onExportPdf }) {
+function EditorialOverview({ groups, timelineData, docTypeData, onOpenPassDashboard, sessionInfo, onExportPdf, passContext }) {
   const source = sessionInfo?.source;
   const sourceMeta = source
     ? [sessionInfo?.clientName, source.fileCount ? `${source.fileCount} files` : source.kind === "file" ? "single file" : null]
@@ -855,11 +860,27 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
 
   return (
     <div className="al-page">
+      {passContext && (
+        <nav className="dashboard-breadcrumb" aria-label="Breadcrumb">
+          <button type="button" className="crumb-back" onClick={passContext.onBack}>
+            <ChevronLeft size={15} />
+            Summary overview
+          </button>
+          <ChevronRight size={14} className="crumb-sep" />
+          <span className="crumb-current">
+            <Layers size={13} />
+            {passContext.passName}
+          </span>
+        </nav>
+      )}
       {/* Hero */}
       <motion.div className="hero" variants={reveal} initial="hidden" animate="visible">
         <div>
           <div className="eyebrow">
-            <span className="dot" /> Live · {totalBatches.toLocaleString()} batches analyzed
+            <span className="dot" />{" "}
+            {passContext
+              ? `Training-pass view · ${passContext.passName}`
+              : `Live · ${totalBatches.toLocaleString()} batches analyzed`}
           </div>
           <h1>
             Every document, <em>read right</em> the first time.
@@ -1020,14 +1041,14 @@ function EditorialOverview({ groups, timelineData, docTypeData, onTrainingPassSe
           <FieldAccuracyList fields={fields} />
         </div>
         <div className="panel col-7">
-          <TrainingPassTable rows={groups.trainingPass} onTrainingPassSelect={onTrainingPassSelect} />
+          <TrainingPassTable rows={groups.trainingPass} onOpenPass={passContext ? undefined : onOpenPassDashboard} />
         </div>
       </motion.div>
     </div>
   );
 }
 
-export default function DashboardView({ data, detailsData, vendorData, onTrainingPassSelect, sessionInfo }) {
+export default function DashboardView({ data, detailsData, vendorData, onTrainingPassSelect, onOpenPassDashboard, sessionInfo, passContext }) {
   const { groups, timelineData, docTypeData } = useMemo(
     () => parseSummaryMetrics(data || [], detailsData || []),
     [data, detailsData]
@@ -1064,9 +1085,10 @@ export default function DashboardView({ data, detailsData, vendorData, onTrainin
         groups={groups}
         timelineData={timelineData}
         docTypeData={docTypeData}
-        onTrainingPassSelect={onTrainingPassSelect}
+        onOpenPassDashboard={onOpenPassDashboard}
         sessionInfo={sessionInfo}
         onExportPdf={handleExportPdf}
+        passContext={passContext}
       />
 
       {/* Detailed analytics — full chart set, restyled */}

@@ -2,14 +2,14 @@
  * UploadView — ingests report data two ways:
  *   - Folder auto-load (webkitdirectory): classifies nested files by name with lenient
  *     matchers (see ARCHITECTURE.md §5) and records the source folder name for the chip.
- *   - Four single-file tiles (Metrics / Details / Vendor / Templates).
+ *   - Five single-file tiles (Metrics / Details / Vendor / Templates / Training Pass).
  * CSVs are parsed in-browser; raw rows are handed up via onDataLoaded(type, payload[, session]).
  * Props: { onDataLoaded, onComplete }.
  */
-import { AlertTriangle, BarChart3, Check, FileText, FolderOpen, Grid3X3, LoaderCircle, Upload, Users } from "lucide-react";
+import { AlertTriangle, BarChart3, Check, FileText, FolderOpen, Grid3X3, Layers, LoaderCircle, Upload, Users } from "lucide-react";
 import { useRef, useState } from "react";
 import { parseCsvFile, readFileAsText } from "../utils/csv.js";
-import { looksLikeTemplateMatching, parseTemplateMatching } from "../utils/parsers.js";
+import { looksLikeTemplateMatching, matchPassKey, parseTemplateMatching } from "../utils/parsers.js";
 
 const MANUAL_FILES = [
   {
@@ -39,6 +39,14 @@ const MANUAL_FILES = [
     filename: "*Template*.csv",
     icon: <Grid3X3 size={18} color="#15966B" />,
     tint: "rgba(21,150,107,0.12)"
+  },
+  {
+    type: "trainingPass",
+    title: "Training Pass",
+    filename: "TrainingPass*.csv",
+    icon: <Layers size={18} color="#E6A12C" />,
+    tint: "rgba(230,161,44,0.14)",
+    multiple: true
   }
 ];
 
@@ -48,7 +56,7 @@ const STEPS = [
   { t: "Explore", d: "Jump straight into the dashboard, reports, SQL console and AI assistant." }
 ];
 
-const EXPECTED = ["info.txt", "*Summary*.csv", "flatReportData.csv", "*Vendor*.csv", "*Template*.csv"];
+const EXPECTED = ["info.txt", "*Summary*.csv", "flatReportData.csv", "*Vendor*.csv", "*Template*.csv", "TrainingPass*.csv"];
 
 export default function UploadView({ onDataLoaded, onComplete }) {
   const [processing, setProcessing] = useState(false);
@@ -59,7 +67,8 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     dashboard: useRef(null),
     details: useRef(null),
     vendor: useRef(null),
-    template: useRef(null)
+    template: useRef(null),
+    trainingPass: useRef(null)
   };
 
   const loadFolder = async (event) => {
@@ -76,7 +85,8 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         dashboard: null,
         details: null,
         vendor: null,
-        template: null
+        template: null,
+        trainingPasses: {}
       };
 
       // Record where the data came from (top-level folder name) so the dashboard can show it.
@@ -111,6 +121,20 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         });
       if (summaryFile) result.dashboard = await parseCsvFile(summaryFile);
 
+      // Per-pass dashboards: every TrainingPass{N}_*.csv (a single-pass summary export), but
+      // NOT the overall *Summary* file and NOT whichever file became the dashboard above.
+      const passFiles = files
+        .filter((file) => {
+          const name = file.name.toLowerCase();
+          return name.endsWith(".csv") && name.includes("trainingpass") && !name.includes("summary") && file !== summaryFile;
+        })
+        .sort((left, right) => left.name.localeCompare(right.name));
+      for (let index = 0; index < passFiles.length; index += 1) {
+        const file = passFiles[index];
+        const key = matchPassKey(file.name) ?? String(index);
+        result.trainingPasses[key] = await parseCsvFile(file);
+      }
+
       const detailsFile = files.find((file) => {
         const name = file.name.toLowerCase();
         // Detailed report = *flatReportData*.csv (any prefix / subfolder), but NOT the region-templates flat file
@@ -142,7 +166,7 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         result.template = parseTemplateMatching(await parseCsvFile(templateFileByName));
       } else {
         for (const candidate of csvFiles) {
-          if ([summaryFile, detailsFile, selectedVendorFile].includes(candidate)) continue;
+          if ([summaryFile, detailsFile, selectedVendorFile].includes(candidate) || passFiles.includes(candidate)) continue;
           const rows = await parseCsvFile(candidate);
           if (looksLikeTemplateMatching(rows)) {
             result.template = parseTemplateMatching(rows);
@@ -155,7 +179,7 @@ export default function UploadView({ onDataLoaded, onComplete }) {
       setProcessing(false);
       setStatus("success");
 
-      if (result.dashboard || result.details || result.vendor || result.template) {
+      if (result.dashboard || result.details || result.vendor || result.template || Object.keys(result.trainingPasses).length) {
         const nextView = result.dashboard ? "dashboard" : result.template ? "template" : result.vendor ? "vendor" : "details";
         window.setTimeout(() => onComplete(nextView), 1000);
       } else {
@@ -187,6 +211,40 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     } catch (exception) {
       setProcessing(false);
       setError(`Error parsing ${type}: ${exception.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  // Per-pass dashboards. Accepts one or many TrainingPass{N}_*.csv files at once; each is keyed
+  // by its pass number so the dashboard's training-pass table can open the matching one.
+  const loadTrainingPassFiles = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    setProcessing(true);
+    setError(null);
+
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        const rows = await parseCsvFile(file);
+        const key = matchPassKey(file.name) ?? String(index);
+        onDataLoaded("trainingPass", rows, key);
+      }
+      onDataLoaded("session", {
+        source: {
+          kind: "file",
+          name: files.length > 1 ? `${files.length} training-pass files` : files[0].name,
+          loadedAt: Date.now()
+        }
+      });
+      setProcessing(false);
+      setStatus("success");
+      window.setTimeout(() => onComplete("dashboard"), 700);
+    } catch (exception) {
+      setProcessing(false);
+      setError(`Error parsing training pass: ${exception.message}`);
     } finally {
       event.target.value = "";
     }
@@ -286,7 +344,10 @@ export default function UploadView({ onDataLoaded, onComplete }) {
                     type="file"
                     ref={fileInputs[item.type]}
                     accept=".csv"
-                    onChange={(event) => loadSingleFile(event, item.type)}
+                    multiple={item.multiple}
+                    onChange={(event) =>
+                      item.type === "trainingPass" ? loadTrainingPassFiles(event) : loadSingleFile(event, item.type)
+                    }
                     hidden
                   />
                 </button>

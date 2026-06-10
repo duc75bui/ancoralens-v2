@@ -1417,6 +1417,26 @@ code {
 }
 .pdf-export-button:hover { filter: brightness(1.06); transform: translateY(-1px); }
 .pdf-export-button:active { transform: translateY(0); }
+
+/* Per-pass dashboard breadcrumb (Summary overview ▸ Training Pass X) */
+.dashboard-breadcrumb {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 14px; font-family: var(--ui); font-size: 13px;
+}
+.dashboard-breadcrumb .crumb-back {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 0; background: transparent; cursor: pointer; padding: 4px 6px;
+  margin-left: -6px; border-radius: var(--radius-md);
+  color: var(--text-secondary); font-weight: 700; letter-spacing: -0.01em;
+  transition: background .15s ease, color .15s ease;
+}
+.dashboard-breadcrumb .crumb-back:hover { background: var(--bg-hover); color: var(--accent-blue, var(--blue)); }
+.dashboard-breadcrumb .crumb-sep { color: var(--text-muted); flex: none; }
+.dashboard-breadcrumb .crumb-current {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 11px; border-radius: var(--radius-full);
+  background: rgba(240,85,43,.12); color: var(--accent-coral, #F0552B); font-weight: 800;
+}
 .kpi {
   position: relative; overflow: hidden;
   background: var(--card); border-radius: var(--radius-xl); padding: 22px 22px 20px;
