@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Download,
   Expand,
+  FileImage,
   Filter,
   Minimize2,
   Maximize2,
@@ -19,6 +20,8 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { downloadCsv } from "../utils/csv.js";
+import DocumentViewer from "./DocumentViewer.jsx";
+import { parseCaptureLocation, resolveDoc } from "../utils/batchImages.js";
 import {
   buildDetailModel,
   countLineItems,
@@ -189,7 +192,7 @@ function LineItemsTable({ lineItems, assignableOnly = false }) {
   );
 }
 
-export default function DetailsReport({ data, savedState = {}, onStateChange }) {
+export default function DetailsReport({ data, imageIndex = null, savedState = {}, onStateChange }) {
   const [query, setQuery] = useState(() => savedState.query || "");
   const [trainingPass, setTrainingPass] = useState(() => savedState.trainingPass || "all");
   const [assignableOnly, setAssignableOnly] = useState(() => Boolean(savedState.assignableOnly));
@@ -202,6 +205,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
   const [sort, setSort] = useState(() => savedState.sort || { key: null, direction: "asc" });
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(() => savedState.page || 1);
+  const [viewer, setViewer] = useState(null);
   const [model, setModel] = useState({
     allColumns: [],
     trainingPasses: [],
@@ -340,6 +344,54 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
     }
     if (severity !== "all") items = items.filter((row) => matchesSeverity(row, severity));
     return items;
+  };
+
+  // Whether a batch's document is available in the loaded images zip (cheap lookup on one row).
+  const batchHasImage = (sampleRow) =>
+    Boolean(imageIndex) &&
+    Boolean(resolveDoc(imageIndex, { inputFileName: sampleRow?.InputFileName, sourceDocId: sampleRow?.SourceDocId }));
+
+  // Build the DocumentViewer payload for a batch: every captured field grouped by its document,
+  // each resolved to a PDF in the zip, with parsed region boxes colored by status.
+  const buildViewerDocs = (batchId) => {
+    const batch = model.batches.find((item) => item.id === batchId);
+    if (!batch) return [];
+    const allRows = [...batch.rows, ...batch.lineItemRows];
+    const groups = {};
+    allRows.forEach((row) => {
+      const key = row.InputFileName || row.SourceDocId || "document";
+      (groups[key] ||= []).push(row);
+    });
+    return Object.values(groups)
+      .map((rows) => {
+        const sample = rows[0];
+        const doc = resolveDoc(imageIndex, { inputFileName: sample.InputFileName, sourceDocId: sample.SourceDocId });
+        if (!doc) return null;
+        const regions = rows
+          .map((row) => {
+            const loc = parseCaptureLocation(row.CaptureLocation, row.CapturedPage);
+            if (!loc) return null;
+            const status = row.FieldStatus || row.Status || row.Result || "";
+            return { name: row.FieldName, value: row.CapturedValue || row.Value, status, kind: statusKind(status), ...loc };
+          })
+          .filter(Boolean);
+        return { label: doc.fileName, doc, regions };
+      })
+      .filter(Boolean);
+  };
+
+  const openViewer = (batchId, focusRow = null) => {
+    const docs = buildViewerDocs(batchId);
+    if (!docs.length) return;
+    let initialDocIndex = 0;
+    let focusField = null;
+    if (focusRow) {
+      const target = String(focusRow.InputFileName || "").toLowerCase();
+      const idx = docs.findIndex((d) => d.label.toLowerCase() === target);
+      if (idx >= 0) initialDocIndex = idx;
+      focusField = focusRow.FieldName;
+    }
+    setViewer({ docs, initialDocIndex, focusField });
   };
 
   const toggleSort = (column) => {
@@ -560,6 +612,7 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
                 warnings: rowProblems.warnings + lineProblems.warnings
               };
               const badge = problemBadge(totalProblems);
+              const hasImage = batchHasImage(headerRows[0] || rows[0]);
 
               return (
                 <Fragment key={batchId}>
@@ -573,20 +626,42 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
                         ({headerRows.length} fields{lineItems.length ? ` / ${lineCount} line items` : ""})
                       </span>
                       {badge && <em className={`problem-badge ${badge.className}`}>{badge.label}</em>}
+                      {hasImage && (
+                        <button
+                          type="button"
+                          className="view-doc-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openViewer(batchId);
+                          }}
+                          title="View source document with field regions"
+                        >
+                          <FileImage size={13} />
+                          View document
+                        </button>
+                      )}
                     </td>
                   </tr>
 
                   {open &&
-                    headerRows.map((row, index) => (
-                      <tr key={`${batchId}-${index}`} style={{ background: statusBackground(row) }}>
-                        <td />
-                        {displayedColumns.map((column) => (
-                          <td key={column} className={column === "FieldStatus" ? "status-cell" : ""} style={{ color: column === "FieldStatus" ? statusColor(row[column]) : undefined }}>
-                            {row[column]}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
+                    headerRows.map((row, index) => {
+                      const locatable = hasImage && parseCaptureLocation(row.CaptureLocation, row.CapturedPage);
+                      return (
+                        <tr
+                          key={`${batchId}-${index}`}
+                          style={{ background: statusBackground(row), cursor: locatable ? "pointer" : undefined }}
+                          onClick={locatable ? () => openViewer(batchId, row) : undefined}
+                          title={locatable ? "Locate this field on the document" : undefined}
+                        >
+                          <td />
+                          {displayedColumns.map((column) => (
+                            <td key={column} className={column === "FieldStatus" ? "status-cell" : ""} style={{ color: column === "FieldStatus" ? statusColor(row[column]) : undefined }}>
+                              {row[column]}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
 
                   {open && lineItems.length > 0 && (
                     <tr className="line-items-row">
@@ -612,6 +687,15 @@ export default function DetailsReport({ data, savedState = {}, onStateChange }) 
           </tbody>
         </table>
       </section>
+
+      {viewer && (
+        <DocumentViewer
+          docs={viewer.docs}
+          initialDocIndex={viewer.initialDocIndex}
+          focusField={viewer.focusField}
+          onClose={() => setViewer(null)}
+        />
+      )}
     </div>
   );
 }

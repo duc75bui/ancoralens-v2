@@ -50,6 +50,7 @@ export default function App() {
   const [templateData, setTemplateData] = useState(null);
   const [trainingPassData, setTrainingPassData] = useState({});
   const [activePass, setActivePass] = useState(null);
+  const [imageIndex, setImageIndex] = useState(null);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [viewMemory, setViewMemory] = useState(loadViewMemory);
 
@@ -108,6 +109,9 @@ export default function App() {
         // payload = parsed rows, sessionPatch = the pass key (e.g. "0", "1")
         setTrainingPassData((current) => ({ ...current, [sessionPatch]: payload }));
         break;
+      case "images":
+        setImageIndex(payload);
+        break;
       case "vendor":
         setVendorData(payload);
         break;
@@ -125,6 +129,7 @@ export default function App() {
         if (payload.trainingPasses && Object.keys(payload.trainingPasses).length) {
           setTrainingPassData((current) => ({ ...current, ...payload.trainingPasses }));
         }
+        if (payload.images) setImageIndex(payload.images);
         if (payload.session) setSessionInfo((current) => ({ ...current, ...payload.session }));
         break;
       default:
@@ -139,6 +144,7 @@ export default function App() {
     setTemplateData(null);
     setTrainingPassData({});
     setActivePass(null);
+    setImageIndex(null);
     setSessionInfo(null);
     setViewMemory({});
     sessionStorage.removeItem(VIEW_MEMORY_KEY);
@@ -225,6 +231,7 @@ export default function App() {
           (detailsData ? (
             <DetailsReport
               data={detailsData}
+              imageIndex={imageIndex}
               savedState={viewMemory.details}
               onStateChange={(patch) => updateViewMemory("details", patch)}
             />

@@ -1735,6 +1735,72 @@ code {
   .hero h1 { font-size: clamp(30px, 9vw, 40px); }
 }
 
+/* ─────────────────────── Document viewer (region audit) ─────────────────────── */
+.view-doc-button {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: 10px; padding: 3px 9px; border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle); background: var(--bg-surface);
+  color: var(--accent-teal, #0E8F8A); font-size: .66rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .02em; cursor: pointer; vertical-align: middle;
+}
+.view-doc-button:hover { background: var(--accent-blue-dim); border-color: var(--accent-teal, #0E8F8A); }
+
+.docviewer-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(20, 18, 12, .55); backdrop-filter: blur(4px);
+}
+.docviewer {
+  display: flex; flex-direction: column;
+  width: min(1040px, 96vw); max-height: 92vh;
+  background: var(--bg-base); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 16px); overflow: hidden;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .5);
+}
+.docviewer-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 13px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface);
+}
+.docviewer-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.docviewer-title strong { font-family: var(--font-mono); font-size: .82rem; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docviewer-title span { font-size: .7rem; color: var(--text-secondary); display: flex; align-items: center; gap: 7px; }
+.dv-err-badge { font-style: normal; font-weight: 800; color: #fff; background: var(--accent-danger, #ef4444); padding: 1px 7px; border-radius: var(--radius-full); font-size: .62rem; }
+.docviewer-actions { display: flex; align-items: center; gap: 10px; }
+.dv-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 700; color: var(--text-secondary); cursor: pointer; }
+.dv-doc-select { font-size: .72rem; padding: 5px 8px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); background: var(--bg-base); color: var(--text-primary); max-width: 240px; }
+.dv-close { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.dv-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.docviewer-stage { flex: 1; overflow: auto; padding: 18px; display: flex; justify-content: center; background: var(--bg-surface); }
+.dv-status { display: flex; align-items: center; gap: 9px; padding: 40px; color: var(--text-secondary); font-size: .85rem; }
+.dv-status.error { color: var(--accent-danger, #ef4444); }
+.dv-canvas-wrap { position: relative; line-height: 0; box-shadow: 0 10px 30px -12px rgba(0,0,0,.35); }
+.dv-canvas { display: block; max-width: 100%; height: auto; }
+.dv-overlay { position: absolute; inset: 0; pointer-events: none; }
+.dv-box {
+  position: absolute; padding: 0; margin: 0; pointer-events: auto; cursor: pointer;
+  border: 2px solid var(--box); background: color-mix(in srgb, var(--box) 14%, transparent);
+  border-radius: 2px; transition: background .12s ease, box-shadow .12s ease;
+}
+.dv-box:hover, .dv-box.active { background: color-mix(in srgb, var(--box) 30%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--box) 60%, transparent); }
+.dv-box.active { animation: dv-pulse 1.1s ease-in-out 2; }
+@keyframes dv-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--box) 35%, transparent); } }
+.dv-box-tag {
+  position: absolute; bottom: 100%; left: -2px; margin-bottom: 2px;
+  font-family: var(--font-mono); font-size: 10px; line-height: 1.3; white-space: nowrap;
+  padding: 1px 5px; border-radius: 4px; background: var(--box); color: #fff;
+  opacity: 0; transition: opacity .12s ease; pointer-events: none;
+}
+.dv-box:hover .dv-box-tag, .dv-box.active .dv-box-tag { opacity: 1; }
+
+.docviewer-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 16px; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.dv-legend { display: flex; gap: 14px; font-size: .7rem; color: var(--text-secondary); }
+.dv-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.dv-legend i { width: 11px; height: 11px; border-radius: 3px; }
+.dv-pager { display: flex; align-items: center; gap: 10px; font-size: .73rem; color: var(--text-secondary); }
+.dv-pager button { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-base); color: var(--text-primary); cursor: pointer; }
+.dv-pager button:disabled { opacity: .4; cursor: default; }
+
 /* ─────────────────────────── PDF / print report ───────────────────────────
    Triggered by the dashboard "Download PDF" button (window.print). Goal: the
    dashboard, faithfully but compactly, across as few pages as possible with no

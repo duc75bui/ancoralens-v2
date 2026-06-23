@@ -6,9 +6,10 @@
  * CSVs are parsed in-browser; raw rows are handed up via onDataLoaded(type, payload[, session]).
  * Props: { onDataLoaded, onComplete }.
  */
-import { AlertTriangle, BarChart3, Check, FileText, FolderOpen, Grid3X3, Layers, LoaderCircle, Upload, Users } from "lucide-react";
+import { AlertTriangle, BarChart3, Check, FileText, FolderOpen, Grid3X3, Images, Layers, LoaderCircle, Upload, Users } from "lucide-react";
 import { useRef, useState } from "react";
 import { parseCsvFile, readFileAsText } from "../utils/csv.js";
+import { parseBatchZip } from "../utils/batchImages.js";
 import { looksLikeTemplateMatching, matchPassKey, parseTemplateMatching } from "../utils/parsers.js";
 
 const MANUAL_FILES = [
@@ -47,6 +48,14 @@ const MANUAL_FILES = [
     icon: <Layers size={18} color="#E6A12C" />,
     tint: "rgba(230,161,44,0.14)",
     multiple: true
+  },
+  {
+    type: "images",
+    title: "Doc Images",
+    filename: "BatchData*.zip",
+    icon: <Images size={18} color="#0E8F8A" />,
+    tint: "rgba(14,143,138,0.14)",
+    accept: ".zip"
   }
 ];
 
@@ -68,7 +77,8 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     details: useRef(null),
     vendor: useRef(null),
     template: useRef(null),
-    trainingPass: useRef(null)
+    trainingPass: useRef(null),
+    images: useRef(null)
   };
 
   const loadFolder = async (event) => {
@@ -250,6 +260,31 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     }
   };
 
+  // Document images: a BatchData*.zip of source PDFs. Parsed in-browser into a doc index the
+  // Detailed Report uses to render pages with field-region overlays.
+  const loadImageZip = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setProcessing(true);
+    setError(null);
+
+    try {
+      const index = await parseBatchZip(file);
+      if (!index.docs.length) throw new Error("No document PDFs found in this zip.");
+      onDataLoaded("images", index);
+      onDataLoaded("session", { source: { kind: "file", name: file.name, loadedAt: Date.now() } });
+      setProcessing(false);
+      setStatus("success");
+      window.setTimeout(() => onComplete("details"), 700);
+    } catch (exception) {
+      setProcessing(false);
+      setError(`Error reading images zip: ${exception.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  };
+
   return (
     <div className="fade-in al-page upload-view">
       {/* Hero */}
@@ -343,11 +378,13 @@ export default function UploadView({ onDataLoaded, onComplete }) {
                   <input
                     type="file"
                     ref={fileInputs[item.type]}
-                    accept=".csv"
+                    accept={item.accept || ".csv"}
                     multiple={item.multiple}
-                    onChange={(event) =>
-                      item.type === "trainingPass" ? loadTrainingPassFiles(event) : loadSingleFile(event, item.type)
-                    }
+                    onChange={(event) => {
+                      if (item.type === "images") return loadImageZip(event);
+                      if (item.type === "trainingPass") return loadTrainingPassFiles(event);
+                      return loadSingleFile(event, item.type);
+                    }}
                     hidden
                   />
                 </button>
