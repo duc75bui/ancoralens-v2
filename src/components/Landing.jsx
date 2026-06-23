@@ -5,6 +5,7 @@
 import { motion } from "framer-motion";
 import { ArrowRight, BarChart3, Brain, Database } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import FluidBackdrop from "./FluidBackdrop.jsx";
 
 const TYPED_WORDS = ["intelligence.", "clarity.", "precision.", "insight."];
 
@@ -86,6 +87,9 @@ export default function Landing({ onStart }) {
 
   return (
     <div className="landing-screen">
+      {/* Animated fluid background — sits behind all content, removable via its own settings panel */}
+      <FluidBackdrop />
+
       {/* Brand */}
       <motion.header
         initial={{ opacity: 0, y: -16 }}

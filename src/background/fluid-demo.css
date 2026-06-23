@@ -1,0 +1,182 @@
+/* Fluid Background Lab — standalone demo page styling.
+   Panel/gear styles live in fluid-settings.css (shared with the landing page);
+   this file defines the lab page itself + the app-named tokens the shared
+   stylesheet resolves its --fs-* variables from. */
+
+:root {
+  /* app-token names consumed by fluid-settings.css */
+  --bg-surface: #FBFAF5;
+  --bg-elevated: #F5F2E9;
+  --border-default: rgba(24, 23, 15, 0.12);
+  --text-primary: #1F1B11;
+  --text-secondary: #514A38;
+  --text-muted: #8A8270;
+  --accent-primary: #2B3AE8;
+  --accent-coral: #F0552B;
+  /* lab-local aliases */
+  --paper: #EFEADD;
+  --ink: var(--text-primary);
+  --ink-soft: var(--text-secondary);
+  --ink-mut: var(--text-muted);
+  --cobalt: var(--accent-primary);
+  --coral: var(--accent-coral);
+  --font-display: "Bricolage Grotesque", serif;
+  --font-ui: "Hanken Grotesk", sans-serif;
+}
+
+body.theme-dark {
+  --bg-surface: #1C1A13;
+  --bg-elevated: #262318;
+  --border-default: rgba(243, 239, 227, 0.16);
+  --text-primary: #F2EDDF;
+  --text-secondary: #C9C2AE;
+  --text-muted: #847C66;
+  --accent-primary: #6E7BFF;
+  --accent-coral: #FF6A43;
+  --paper: #14120C;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: var(--font-ui);
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+#stage { position: fixed; inset: 0; }
+#stage canvas { touch-action: none; }
+
+/* the settings UI host sits above everything; gear/panel re-enable events */
+#fluidUi { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+#fluidUi .gear-btn, #fluidUi .settings-panel { pointer-events: auto; }
+
+/* ----------------------------- lab badge ----------------------------- */
+
+.lab-badge {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+.lab-badge-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--cobalt);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+/* --------------------- mock landing copy (overlay) -------------------- */
+/* Static replica of Landing.jsx purely to preview legibility — the real
+   landing page is untouched. pointer-events:none lets the cursor stir the
+   fluid straight through the copy. */
+
+.landing-mock {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  padding: 40px clamp(28px, 7vw, 96px);
+  transition: opacity 0.35s ease;
+}
+.landing-mock.hidden { opacity: 0; }
+
+.mock-brand h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.mock-brand strong { font-weight: 750; }
+
+.mock-copy {
+  margin: auto 0;
+  max-width: 640px;
+}
+.mock-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.mock-eyebrow-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
+
+.mock-headline {
+  margin: 18px 0 20px;
+  font-family: var(--font-display);
+  font-size: clamp(52px, 9vw, 110px);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+  display: flex;
+  flex-direction: column;
+}
+.mock-headline em { font-style: normal; color: var(--cobalt); }
+
+.mock-copy p {
+  margin: 0 0 28px;
+  max-width: 52ch;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.mock-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 13px 26px;
+  font-size: 15px;
+  font-weight: 650;
+  color: #FBFAF5;
+  background: var(--cobalt);
+  border-radius: 999px;
+  box-shadow: 0 10px 28px -10px color-mix(in srgb, var(--cobalt) 55%, transparent);
+}
+
+.mock-stats {
+  display: flex;
+  gap: clamp(24px, 4vw, 56px);
+  margin-top: 44px;
+}
+.mock-stats b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.mock-stats i {
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--ink-mut);
+}
+
+@media (max-width: 560px) {
+  .mock-headline { font-size: clamp(44px, 13vw, 72px); }
+}

@@ -52,8 +52,40 @@ export function parseCaptureLocation(value, fallbackPage) {
  * @returns {Promise<{ byFile: Record<string,Doc>, byDoc: Record<string,Doc>, docs: Doc[] }>}
  *   Doc = { fileName, batchId, docId, getArrayBuffer(): Promise<ArrayBuffer>, capturedData?: object }
  */
-export async function parseBatchZip(file) {
-  const zip = await JSZip.loadAsync(file);
+
+/** True for a zip or one of its split chunks: `name.zip` or `name.zip.partN`. */
+export function isZipPart(name) {
+  return /\.zip(\.part\d+)?$/i.test(String(name || ""));
+}
+
+/** Group key for split parts: drop a trailing `.partN` so all chunks share one base. */
+export function zipBaseName(name) {
+  return String(name || "").toLowerCase().replace(/\.part\d+$/i, "");
+}
+
+/**
+ * Reassemble a split archive: the base `*.zip` is segment 0 and `*.zip.partN` follow in numeric
+ * order. Raw byte‑split, so concatenating the chunks in order reconstructs the original zip.
+ * Returns a single Blob ready for JSZip.
+ */
+export function assembleZipParts(files) {
+  const ordered = files
+    .map((file) => {
+      const m = String(file.name).toLowerCase().match(/^(.*\.zip)(?:\.part(\d+))?$/);
+      return m ? { file, order: m[2] === undefined ? 0 : Number(m[2]) } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.order - b.order);
+  return new Blob(ordered.map((entry) => entry.file));
+}
+
+/**
+ * @param {File|Blob|File[]} input  a single zip File/Blob, or an array of a zip + its `.partN`
+ *   chunks (reassembled before reading).
+ */
+export async function parseBatchZip(input) {
+  const source = Array.isArray(input) ? assembleZipParts(input) : input;
+  const zip = await JSZip.loadAsync(source);
   const byFile = {};
   const byDoc = {};
   const docs = [];
