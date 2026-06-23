@@ -55,7 +55,10 @@ function makePdf(pages) {
     const pageObj = 4 + 2 * p;
     const contentObj = 5 + 2 * p;
     kids.push(`${pageObj} 0 R`);
-    let content = `BT\n/F1 22 Tf\n${LEFT_PT} ${TITLE_Y} Td\n(${esc(pg.title)}) Tj\n/F1 ${BODY_SIZE} Tf\n${LEFT_PT} ${BODY_Y0} Td\n(${esc(pg.lines[0] || "")}) Tj\n`;
+    // Td is RELATIVE to the previous line's start. Title sits at TITLE_Y; the first body line is
+    // reached by moving down (TITLE_Y - BODY_Y0), then each subsequent line by LINE_GAP. (Using an
+    // absolute-looking "x BODY_Y0 Td" here would add to the title position and push text off-page.)
+    let content = `BT\n/F1 22 Tf\n${LEFT_PT} ${TITLE_Y} Td\n(${esc(pg.title)}) Tj\n/F1 ${BODY_SIZE} Tf\n0 -${TITLE_Y - BODY_Y0} Td\n(${esc(pg.lines[0] || "")}) Tj\n`;
     for (let i = 1; i < pg.lines.length; i += 1) content += `0 -${LINE_GAP} Td\n(${esc(pg.lines[i])}) Tj\n`;
     content += "ET";
     objects[pageObj - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W_PT} ${PAGE_H_PT}] /Resources << /Font << /F1 ${FONT} 0 R >> >> /Contents ${contentObj} 0 R >>`;
