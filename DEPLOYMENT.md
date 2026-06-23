@@ -7,8 +7,23 @@ To build the application, you need the following installed on your build machine
 *   **Node.js**: Version 18 or higher (LTS recommended). [Download Here](https://nodejs.org/)
 *   **NPM**: Included with Node.js.
 
+> All runtime libraries (including `pdfjs-dist` and `jszip`, used by the in‑browser document
+> viewer) install with a plain `npm install` — there are **no extra components to install**.
+> The document viewer, CSV parsing, and zip reading are entirely client‑side.
+
 ## 2. Build Instructions
-The application parses CSVs entirely in the browser (Client-Side), so it does **not** require a dedicated backend server (like Node.js or Python) to run in production. It simply needs to be served as static HTML/JS/CSS files.
+The application parses CSVs, renders source PDFs, and reads BatchData zips **entirely in the
+browser (client‑side)**. The static `dist/` bundle is all that's needed for the
+dashboards, detailed report, and document viewer.
+
+> **Optional backend:** only the **SQL Connector** (→ MSSQL) and **AI Assistant** (→ Google
+> Gemini) call the Express server (`server/index.js`, `/api/*`). If you don't use those two
+> features, you can serve `dist/` as plain static files. If you do, run the unified Node
+> server (it serves `dist/` **and** `/api` on one port — see `DEPLOY_IIS.md`).
+
+> **pdf.js worker asset:** the build emits `dist/assets/pdf.worker.*.mjs` (the pdf.js web
+> worker). It must be deployed alongside the other `dist/assets/*` files (the build and
+> `npm run package` already include it) — without it the document viewer cannot render PDFs.
 
 ### Step 2.1: Production Build
 Open your terminal in the project root (`interactive-csv-dashboard/`) and run:
@@ -42,8 +57,28 @@ Since this is a Windows environment, IIS is a common choice.
     *   **Site name**: `AncoraDashboard`
     *   **Physical path**: Point this to the `dist` folder you just built (e.g., `C:\inetpub\wwwroot\AncoraDashboard`).
     *   **Port**: `80` (or `8080` / specific port).
-3.  **MIME Types**: 
-    Verify `.js` and `.css` are allowed (usually default).
+3.  **MIME Types**:
+    Verify `.js` and `.css` are allowed (usually default). **Also add `.mjs` → `text/javascript`** —
+    the pdf.js document‑viewer **worker** ships as `assets/pdf.worker.*.mjs`, and IIS does **not**
+    serve `.mjs` by default (it 404s), which silently breaks the document viewer. Either add it in
+    IIS Manager (site → *MIME Types* → *Add*: extension `.mjs`, type `text/javascript`) or drop a
+    `web.config` next to `dist/index.html`:
+
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <system.webServer>
+        <staticContent>
+          <remove fileExtension=".mjs" />
+          <mimeMap fileExtension=".mjs" mimeType="text/javascript" />
+        </staticContent>
+      </system.webServer>
+    </configuration>
+    ```
+
+    > This only applies when IIS serves `dist/` **as static files**. The recommended
+    > reverse‑proxy / unified‑Node deployments (see `DEPLOY_IIS.md`) serve assets through
+    > Express, which already returns `.mjs` as `text/javascript` — no MIME change needed.
 4.  **Browse**: Open `http://localhost/` (or your server IP).
 
 ### Option B: Static Web Hosting (Netlify, Vercel, AWS S3)

@@ -30,6 +30,7 @@ Two important properties:
 | Charts | Bespoke animated SVG (`AncoraCharts.jsx`) + Recharts 3 |
 | Motion | framer‑motion + custom `requestAnimationFrame` + `IntersectionObserver` reveals |
 | CSV | PapaParse |
+| Documents | pdf.js (`pdfjs-dist`) renders source pages in the in‑browser document viewer; `jszip` reads the `BatchData*.zip` export |
 | Icons | lucide‑react |
 | Server | Express 5, `mssql` (tedious), `@google/generative-ai` |
 | Build/Deploy | Vite build → unified Node server → IIS reverse proxy (Windows Server) |
@@ -124,6 +125,8 @@ stateDiagram-v2
   [*] --> landing
   landing --> upload: Get started
   upload --> dashboard: data loaded (onComplete)
+  dashboard --> passDashboard: open a training pass (table row)
+  passDashboard --> dashboard: breadcrumb "Summary overview"
   dashboard --> details
   dashboard --> vendor
   dashboard --> template
@@ -142,16 +145,26 @@ stateDiagram-v2
 
 | State | Purpose |
 |---|---|
-| `activeView` | which view renders (`landing`/`upload`/`dashboard`/`details`/`vendor`/`template`/`sql`/`ai`/`docs`) |
+| `activeView` | which view renders (`landing`/`upload`/`dashboard`/`passDashboard`/`details`/`vendor`/`template`/`sql`/`ai`/`docs`) |
 | `theme` | `light`/`dark`; applied via `data-theme` on `<html>` |
 | `dashboardData` | raw summary CSV rows |
 | `detailsData` | raw detailed‑report CSV rows |
 | `vendorData` | raw vendor CSV rows |
 | `templateData` | **parsed** template‑matching model (or `{error}`) |
+| `trainingPassData` | `{ [passKey]: rows }` — per‑pass summary CSVs (`TrainingPass{N}_*.csv`), keyed by pass number |
+| `activePass` | the training‑pass name currently open in the per‑pass dashboard |
+| `imageIndex` | parsed `BatchData*.zip` doc index (`{ byFile, byDoc, docs }`) for the document viewer |
 | `sessionInfo` | `{ clientName, version, source:{ name, fileCount, kind } }` — drives the sidebar title and the dashboard's data‑source chip |
 | `viewMemory` | per‑view UI state (filters, expansion, page) persisted to `sessionStorage` |
 
-`hasData = dashboardData || detailsData || vendorData || templateData`.
+`hasData = dashboardData || detailsData || vendorData || templateData || trainingPassData`.
+
+**Per‑pass dashboards.** `DashboardView` is reused in a "per‑pass mode": clicking a row in
+the training‑pass table calls `openPassDashboard(passName)`, which resolves the matching
+per‑pass rows (`resolvePassRows` — tolerant of 0‑ vs 1‑indexed files via a ±1 fallback) and
+renders the dashboard with a `passContext` (breadcrumb + "you are on Training Pass X"
+banner). The training‑pass **bar chart** still routes to the Detailed Report; only the
+**table** opens a per‑pass dashboard.
 
 ---
 
@@ -189,11 +202,28 @@ subfolders; `webkitdirectory` includes nested files):
 | Detailed report → `detailsData` | `*flatreportdata*` **excluding** `*regiontemplate*` |
 | Vendor → `vendorData` | `*vendor*` (prefers `*report*`, else `*low_overall_accuracy*`) |
 | Template matching → `templateData` | `*template*` or `*region*` |
+| Per‑pass dashboards → `trainingPasses` | every `*trainingpass*.csv` **excluding** `*summary*`, keyed by pass number (`matchPassKey`) |
+| Document images → `imageIndex` | a `BatchData*.zip` (source‑document PDFs); parsed by `utils/batchImages.parseBatchZip` |
 | Session | `info.txt` (line 1 = client, line 2 = version); folder name from `webkitRelativePath` |
 
 > ⚠️ Ordering matters: the summary matcher **prefers `*Summary*`** so a per‑pass
 > `TrainingPass0.csv` doesn't shadow the multi‑pass summary that contains the
 > training‑pass breakdown. (Regression fixed — keep this priority.)
+
+**Upload tiles.** `UploadView` exposes the folder auto‑load **plus six** single‑purpose
+tiles: Metrics, Details, Vendor, Templates, **Training Pass** (multi‑select; one CSV per
+pass), and **Doc Images** (`.zip`). The training‑pass and images datasets are also picked up
+by folder auto‑load. `onDataLoaded` carries the extra types `"trainingPass"` (payload =
+rows, 3rd arg = pass key) and `"images"` (payload = doc index).
+
+### Document images (BatchData zip → viewer)
+
+`utils/batchImages.js` reads the export zip **in the browser** (JSZip) and builds a doc
+index keyed by `InputFileName` **and** `docId` GUID, with a lazy `getArrayBuffer()` so PDF
+bytes load only when a viewer opens. `parseCaptureLocation(str, fallbackPage)` turns a CSV
+`CaptureLocation` into `{ page, left, top, right, bottom }`. The **Detailed Report** adds a
+"View document" action per batch (and click‑a‑field‑row to locate a region); `DocumentViewer`
+renders the page with pdf.js and overlays each field's box, colored by `statusKind`. See §7.5.
 
 ---
 
@@ -208,6 +238,7 @@ subfolders; `webkitdirectory` includes nested files):
 | `parseTemplateMatching(rows)` | template CSV rows | `{ summary, batches, templates, raw }` or `{ error }` |
 | `buildDetailModel(rows)` | detail CSV rows | `{ allColumns, trainingPasses, batches, filteredRows }` |
 | `statusKind / statusColor / classifyBreakdown` | a status string | semantic class / color / breakdown bucket |
+| `matchPassKey(label)` | a label or filename | pass number string (e.g. `"0"`) or `null` — lines up summary rows, the detail `TrainingPass` column, and `TrainingPass{N}` files |
 
 `parseSummaryMetrics().groups`:
 
@@ -231,14 +262,19 @@ docTypeData  = [{ name, value }]   // counts per DocumentType
 The detailed report's `FieldStatus` column and the summary breakdown buckets are
 classified two ways:
 
-- **Keyword class** (`statusKind`): `success` (`correct/valid/match`), `error`
-  (`wrong/invalid/missing/fail/incorrect/mismatch`), `warning`
-  (`misassign/unknown/unassign/partial/review/skipped`).
+- **Keyword class** (`statusKind`): `success` / `error` / `warning`. It first maps the
+  **canonical FieldStatus codes** from the Documentation glossary explicitly
+  (`STATUS_CODE_KIND`: e.g. `TextMatchFail`→error, `UnassignedValid`→warning), then falls
+  back to keyword matching with **negatives checked before positives**. This is deliberate:
+  naive substring matching mis‑reads codes where a positive token is embedded in a negative
+  one (`"match"` ⊂ `TextMatchFail`, `"valid"` ⊂ `UnassignedValid`/`invalid`), which otherwise
+  hid real errors/warnings from the severity filter and the problem badges.
 - **Breakdown bucket** (`classifyBreakdown`): a value × position matrix — e.g.
   *Correct & Location*, *Correct (Unassigned)*, *Incorrect (Mismatch)*, *Unknown Region*…
 
 The full plain‑English definitions live in the in‑app **Documentation** page
-(`DocumentationView.jsx`) — the canonical glossary for error/status types.
+(`DocumentationView.jsx`) — the canonical glossary, and the **source of truth** that
+`STATUS_CODE_KIND` mirrors. If you add/rename a FieldStatus code, update both.
 
 ---
 
@@ -254,6 +290,29 @@ The full plain‑English definitions live in the in‑app **Documentation** page
   view**, not on mount. `DashboardView` uses a `useInView` IntersectionObserver hook;
   Recharts charts are wrapped in `RevealChart` (mounts on view, reserving height to avoid
   layout shift); the volume rings/gauges gate their `useAnimatedNumber` on `inView`.
+
+### 7.5 Document viewer, region overlay & PDF report export
+
+- **Document viewer** (`DocumentViewer.jsx`): a modal that renders a source page from the
+  `BatchData` export's PDF via **pdf.js** (`pdfjs-dist`; the worker is loaded with
+  `import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"`) and overlays each
+  captured field's region, colored by `statusKind`. Coordinates are OCR raster pixels; the
+  page is rendered at a scale and the overlay transform is `renderScale × 72 / OCR_DPI`
+  (`OCR_DPI = 300` — the one dial to change if a dataset rasterizes at a different DPI). The
+  overlay geometry is committed **before** the async raster render so boxes position even
+  under a StrictMode double‑invoke. Per‑document page indexing is **auto‑detected** (0‑ vs
+  1‑based) so a field lands on the right page of a multi‑page PDF; click a field row to jump
+  to its page with the box highlighted. Source documents are PDFs, not images — there is no
+  PNG step.
+- **PDF report export** (`DashboardView` "Download PDF"): uses the browser print pipeline
+  (`window.print`) — no new deps, text/SVG stay crisp. Because charts below the fold are
+  lazily mounted, a `PrintModeContext` forces every `useInView` gate true during export so
+  all widgets render before the dialog opens; the `@media print` block in `styles.css`
+  hides chrome, unlocks the fixed‑height shell, neutralizes framer‑motion entrance
+  opacity/transform on layout wrappers, and avoids splitting a widget across a page break.
+- **Severity filter** (`DetailsReport`): an *All / Warnings & Errors / Errors Only* dropdown
+  filters both the header rows and nested line‑item rows by `statusKind`, so batches with no
+  matching problems drop out. Persisted via `savedState`.
 
 ---
 
@@ -313,9 +372,10 @@ Real exports are often partial. The app never fabricates metrics:
 | `src/App.jsx` | State owner + view router; `handleDataLoaded`, `resetSession`, `viewMemory` |
 | `src/components/Landing.jsx` | Editorial landing / entry screen |
 | `src/components/Sidebar.jsx` | Left nav, theme toggle, reset, session/brand title |
-| `src/components/UploadView.jsx` | Folder auto‑load + 4 single‑file inputs; file classification; source capture |
-| `src/components/DashboardView.jsx` | Editorial overview (hero, KPIs, signature charts) + full Recharts analytics; in‑view animation |
-| `src/components/DetailsReport.jsx` | Dense field‑level table: filters, search, columns, pagination, batch/line‑item trees, export |
+| `src/components/UploadView.jsx` | Folder auto‑load + 6 single‑purpose tiles (incl. Training Pass, Doc Images zip); file classification; source capture |
+| `src/components/DashboardView.jsx` | Editorial overview (hero, KPIs incl. labor savings, signature charts) + full Recharts analytics; per‑pass mode (breadcrumb); "Download PDF" export; in‑view animation |
+| `src/components/DetailsReport.jsx` | Dense field‑level table: severity filter, search, columns, pagination, batch/line‑item trees, export, "View document" → `DocumentViewer` |
+| `src/components/DocumentViewer.jsx` | Modal: pdf.js page render + field‑region overlay (status‑colored), page nav, errors‑only, click‑to‑focus |
 | `src/components/VendorReport.jsx` | Vendor table: KPI row, column sorting, expandable per‑vendor detail |
 | `src/components/TemplateMatching.jsx` | Coverage donut + usage chart + windowed/memoized batch→doc→page accordion |
 | `src/components/SqlConnector.jsx` | MSSQL connection form + query editor + results/export |
@@ -323,10 +383,12 @@ Real exports are often partial. The app never fabricates metrics:
 | `src/components/DocumentationView.jsx` | Searchable field‑status reference (the glossary) |
 | `src/components/AncoraCharts.jsx` | Bespoke SVG chart primitives + hooks + shared tooltip |
 | `src/utils/csv.js` | PapaParse wrappers (UTF‑16 / BOM / `sep=` tolerant), CSV export |
-| `src/utils/parsers.js` | All report parsers + status taxonomy |
+| `src/utils/parsers.js` | All report parsers + status taxonomy + `matchPassKey` |
+| `src/utils/batchImages.js` | Read `BatchData*.zip` (JSZip) → doc index; `parseCaptureLocation`; `resolveDoc` |
 | `server/index.js` | Express server: static UI + SQL/AI API |
-| `vite.config.js` | Vite config + dev `/api` proxy |
+| `vite.config.js` | Vite config + dev `/api` proxy (port **5174**, `strictPort`) |
 | `scripts/package.mjs` | Build + assemble + zip the deploy bundle |
+| `scripts/make-test-artifacts.cjs` | Generate the synthetic `test-artifacts/` bundle (no real data) |
 | `iis/*`, `DEPLOY_IIS.md`, `DEPLOY_AZURE_VM.md` | Windows/IIS deployment |
 
 ---
@@ -336,12 +398,16 @@ Real exports are often partial. The app never fabricates metrics:
 ```bash
 npm install
 
-# Frontend (Vite dev server, HMR) — http://localhost:5173
+# Frontend (Vite dev server, HMR) — http://localhost:5174  (pinned, strictPort)
 npm run dev
 
 # Backend (only needed for SQL Connector / AI Assistant) — http://localhost:3001
 npm run server        # node server/index.js
 ```
+
+> The dev port is **5174** (`vite.config.js`, `strictPort: true`) — it fails loudly instead
+> of drifting to another port, which keeps the preview/registry tooling in sync. The Vite
+> dev server proxies `/api` → `:3001`.
 
 - Load data via **Upload Data → Auto‑Load from Folder** (a results export folder) or the
   individual CSV tiles.
