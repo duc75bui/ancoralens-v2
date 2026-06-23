@@ -52,7 +52,7 @@ const MANUAL_FILES = [
   {
     type: "images",
     title: "Doc Images",
-    filename: "BatchData*.zip",
+    filename: "*.zip (BatchData export)",
     icon: <Images size={18} color="#0E8F8A" />,
     tint: "rgba(14,143,138,0.14)",
     accept: ".zip"
@@ -185,11 +185,33 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         }
       }
 
+      // Document images: ANY .zip in the folder (not name-bound — real exports use prefixes like
+      // "BFS_batchData.zip"). parseBatchZip identifies it by its internal Batches/.../InputFiles
+      // structure, so a non-document zip simply yields no docs and is ignored.
+      const zipFile = files.find((file) => file.name.toLowerCase().endsWith(".zip"));
+
       onDataLoaded("all", result);
       setProcessing(false);
       setStatus("success");
 
-      if (result.dashboard || result.details || result.vendor || result.template || Object.keys(result.trainingPasses).length) {
+      // Parse the zip in the background (it can be very large) so the CSV-driven views load
+      // immediately; the Detailed Report's "View document" affordance appears once it resolves.
+      if (zipFile) {
+        parseBatchZip(zipFile)
+          .then((index) => {
+            if (index.docs.length) onDataLoaded("images", index);
+          })
+          .catch((exception) => console.warn("Folder load: could not read", zipFile.name, exception?.message));
+      }
+
+      if (
+        result.dashboard ||
+        result.details ||
+        result.vendor ||
+        result.template ||
+        Object.keys(result.trainingPasses).length ||
+        zipFile
+      ) {
         const nextView = result.dashboard ? "dashboard" : result.template ? "template" : result.vendor ? "vendor" : "details";
         window.setTimeout(() => onComplete(nextView), 1000);
       } else {

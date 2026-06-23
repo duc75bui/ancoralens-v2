@@ -203,7 +203,7 @@ subfolders; `webkitdirectory` includes nested files):
 | Vendor → `vendorData` | `*vendor*` (prefers `*report*`, else `*low_overall_accuracy*`) |
 | Template matching → `templateData` | `*template*` or `*region*` |
 | Per‑pass dashboards → `trainingPasses` | every `*trainingpass*.csv` **excluding** `*summary*`, keyed by pass number (`matchPassKey`) |
-| Document images → `imageIndex` | a `BatchData*.zip` (source‑document PDFs); parsed by `utils/batchImages.parseBatchZip` |
+| Document images → `imageIndex` | **any `.zip`** in the folder (any prefix, e.g. `BFS_batchData.zip`) — identified by its internal `Batches/.../InputFiles/*.pdf` structure, not its filename; parsed by `utils/batchImages.parseBatchZip`. Parsed in the **background** so a large archive doesn't delay the CSV views. |
 | Session | `info.txt` (line 1 = client, line 2 = version); folder name from `webkitRelativePath` |
 
 > ⚠️ Ordering matters: the summary matcher **prefers `*Summary*`** so a per‑pass

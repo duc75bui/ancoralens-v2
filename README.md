@@ -53,7 +53,7 @@ export folder (or upload individual CSVs via the tiles):
 | Vendor | `*Vendor*.csv` | vendor analysis |
 | Templates | `*Template*.csv` | template matching |
 | Training Pass | `TrainingPass{N}_*.csv` (multi‑select) | per‑pass dashboards |
-| Doc Images | `BatchData*.zip` | document viewer (region overlay) |
+| Doc Images | any `.zip` (BatchData export, any prefix) | document viewer (region overlay) |
 
 **Testing without real data:** `node scripts/make-test-artifacts.cjs` writes a synthetic,
 safe-to-share bundle to `test-artifacts/` (a `BatchData` zip of generated invoice PDFs +
