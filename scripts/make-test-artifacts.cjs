@@ -5,8 +5,8 @@
  * Output: ./test-artifacts/
  *
  * Region boxes are COMPUTED from where each value is drawn in the PDF (PDF points -> 300 DPI
- * raster, Y flipped), so the overlay lands on the actual text — a faithful fixture that also
- * doubles as a visual check of the viewer's coordinate math.
+ * raster, Y flipped), so the overlay lands on the actual text. Includes a multi-page document
+ * (1004) with an error on page 2 to exercise per-page region mapping + page navigation.
  */
 const fs = require("fs");
 const path = require("path");
@@ -19,18 +19,17 @@ fs.mkdirSync(OUT, { recursive: true });
 const PAGE_W_PT = 612;
 const PAGE_H_PT = 792;
 const DPI = 300;
-const K = DPI / 72; // pt -> raster px
+const K = DPI / 72;
 const TITLE_Y = 720;
-const BODY_Y0 = 690; // first body line baseline (pt, from page bottom)
+const BODY_Y0 = 690;
 const LINE_GAP = 26;
 const BODY_SIZE = 13;
 const LEFT_PT = 60;
-const CHAR_W = 0.52; // avg Helvetica advance (em)
-const CAP = 0.70; // cap height (em)
-const DESC = 0.22; // descender (em)
+const CHAR_W = 0.52;
+const CAP = 0.7;
+const DESC = 0.22;
 
-// Bounding box (raster "left,top,right,bottom") of the `value` part of body line `lineIndex`,
-// given the literal `prefix` text that precedes it on that line.
+// Raster "left,top,right,bottom" of the value text on body line `lineIndex` (0-based, per page).
 function valueBox(lineIndex, prefix, value) {
   const yb = BODY_Y0 - LINE_GAP * lineIndex;
   const x0 = LEFT_PT + CHAR_W * BODY_SIZE * prefix.length;
@@ -42,27 +41,33 @@ function valueBox(lineIndex, prefix, value) {
   return `${left},${top},${right},${bottom}`;
 }
 
-// ── minimal single-page PDF (Helvetica), letter 612x792pt, valid xref so pdf.js renders it ──
+// ── multi-page PDF (Helvetica), valid xref so pdf.js renders it. pages: [{title, lines:[str]}] ──
 function esc(s) {
   return String(s).replace(/([\\()])/g, "\\$1");
 }
-function makePdf(title, lines) {
-  let content = `BT\n/F1 22 Tf\n${LEFT_PT} ${TITLE_Y} Td\n(${esc(title)}) Tj\n/F1 ${BODY_SIZE} Tf\n${LEFT_PT} ${BODY_Y0} Td\n(${esc(lines[0] || "")}) Tj\n`;
-  for (let i = 1; i < lines.length; i += 1) content += `0 -${LINE_GAP} Td\n(${esc(lines[i])}) Tj\n`;
-  content += "ET";
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W_PT} ${PAGE_H_PT}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`
-  ];
+function makePdf(pages) {
+  const FONT = 3;
+  const objects = [];
+  objects[0] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const kids = [];
+  pages.forEach((pg, p) => {
+    const pageObj = 4 + 2 * p;
+    const contentObj = 5 + 2 * p;
+    kids.push(`${pageObj} 0 R`);
+    let content = `BT\n/F1 22 Tf\n${LEFT_PT} ${TITLE_Y} Td\n(${esc(pg.title)}) Tj\n/F1 ${BODY_SIZE} Tf\n${LEFT_PT} ${BODY_Y0} Td\n(${esc(pg.lines[0] || "")}) Tj\n`;
+    for (let i = 1; i < pg.lines.length; i += 1) content += `0 -${LINE_GAP} Td\n(${esc(pg.lines[i])}) Tj\n`;
+    content += "ET";
+    objects[pageObj - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W_PT} ${PAGE_H_PT}] /Resources << /Font << /F1 ${FONT} 0 R >> >> /Contents ${contentObj} 0 R >>`;
+    objects[contentObj - 1] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  });
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>`;
   let pdf = "%PDF-1.4\n";
   const offsets = [];
-  objects.forEach((body, i) => {
+  for (let i = 0; i < objects.length; i += 1) {
     offsets.push(pdf.length);
-    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
-  });
+    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`;
+  }
   const xrefStart = pdf.length;
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
   offsets.forEach((off) => {
@@ -72,36 +77,80 @@ function makePdf(title, lines) {
   return Buffer.from(pdf, "latin1");
 }
 
-// ── synthetic documents: each is one batch / one document / one page ──
+// ── documents: each has pages[]; tagged lines become report fields with a computed box ──
 const TYPE_ID = "aaaa1111-bbbb-2222-cccc-333333333333";
-const DOCS = [
-  { batchId: "b0000001-0000-0000-0000-000000000001", docId: "d0000001-0000-0000-0000-000000000001",
-    file: "Invoice_SAMPLE_1001.pdf", vendor: "Acme Supplies Inc", number: "1001", date: "2024-03-04", total: "1240.00", captured: "1240.00" },
-  { batchId: "b0000002-0000-0000-0000-000000000002", docId: "d0000002-0000-0000-0000-000000000002",
-    file: "Invoice_SAMPLE_1002.pdf", vendor: "Globex Corporation", number: "1002", date: "2024-03-09", total: "865.50", captured: "8G5.50" },
-  { batchId: "b0000003-0000-0000-0000-000000000003", docId: "d0000003-0000-0000-0000-000000000003",
-    file: "Invoice_SAMPLE_1003.pdf", vendor: "Initech LLC", number: "1003", date: "2024-03-15", total: "402.75", captured: "402.75" }
+
+function invoice1Page(meta, i) {
+  const po = `PO-${meta.number}`;
+  return {
+    batchId: meta.batchId,
+    docId: meta.docId,
+    file: meta.file,
+    batchName: `Batch-SAMPLE-${meta.number}`,
+    pages: [
+      {
+        title: `INVOICE ${meta.number}`,
+        lines: [
+          { text: `Vendor: ${meta.vendor}`, field: "FT_VENDOR_NAME", prefix: "Vendor: ", value: meta.vendor, status: "Correct" },
+          { text: `Invoice #: ${meta.number}`, field: "FT_INVOICE_NUMBER", prefix: "Invoice #: ", value: meta.number, status: "Correct" },
+          { text: `Date: ${meta.date}`, field: "FT_ISSUE_DATE", prefix: "Date: ", value: meta.date, status: "Correct" },
+          { text: `PO Number: ${po}`, field: "FT_PO_NUMBER", prefix: "PO Number: ", value: po, status: i === 2 ? "MisAssignment" : "Correct" },
+          { text: "" },
+          { text: "Description            Qty     Amount" },
+          { text: `Professional services    1     ${meta.total}` },
+          { text: "" },
+          { text: `TOTAL DUE: ${meta.captured}`, field: "FT_INVOICE_TOTAL", prefix: "TOTAL DUE: ", value: meta.captured, status: meta.captured === meta.total ? "Correct" : "WrongInput", trueValue: meta.total }
+        ]
+      }
+    ]
+  };
+}
+
+const DOCUMENTS = [
+  invoice1Page({ batchId: "b0000001-0000-0000-0000-000000000001", docId: "d0000001-0000-0000-0000-000000000001", file: "Invoice_SAMPLE_1001.pdf", vendor: "Acme Supplies Inc", number: "1001", date: "2024-03-04", total: "1240.00", captured: "1240.00" }, 0),
+  invoice1Page({ batchId: "b0000002-0000-0000-0000-000000000002", docId: "d0000002-0000-0000-0000-000000000002", file: "Invoice_SAMPLE_1002.pdf", vendor: "Globex Corporation", number: "1002", date: "2024-03-09", total: "865.50", captured: "8G5.50" }, 1),
+  invoice1Page({ batchId: "b0000003-0000-0000-0000-000000000003", docId: "d0000003-0000-0000-0000-000000000003", file: "Invoice_SAMPLE_1003.pdf", vendor: "Initech LLC", number: "1003", date: "2024-03-15", total: "402.75", captured: "402.75" }, 2),
+  // Multi-page document: header fields on page 1, line items + an error on page 2.
+  {
+    batchId: "b0000004-0000-0000-0000-000000000004",
+    docId: "d0000004-0000-0000-0000-000000000004",
+    file: "Invoice_SAMPLE_1004_multipage.pdf",
+    batchName: "Batch-SAMPLE-1004",
+    pages: [
+      {
+        title: "INVOICE 1004 - PAGE 1",
+        lines: [
+          { text: "Vendor: Umbrella Logistics", field: "FT_VENDOR_NAME", prefix: "Vendor: ", value: "Umbrella Logistics", status: "Correct" },
+          { text: "Invoice #: 1004", field: "FT_INVOICE_NUMBER", prefix: "Invoice #: ", value: "1004", status: "Correct" },
+          { text: "Date: 2024-03-20", field: "FT_ISSUE_DATE", prefix: "Date: ", value: "2024-03-20", status: "Correct" },
+          { text: "" },
+          { text: "(line items continue on page 2)" }
+        ]
+      },
+      {
+        title: "INVOICE 1004 - PAGE 2",
+        lines: [
+          { text: "Line items:" },
+          { text: "Widget A    qty 2    500.00", field: "FT_LINE_1_AMOUNT", prefix: "Widget A    qty 2    ", value: "500.00", status: "Correct" },
+          { text: "Widget B    qty 1    3OO.OO", field: "FT_LINE_2_AMOUNT", prefix: "Widget B    qty 1    ", value: "3OO.OO", status: "WrongInput", trueValue: "300.00" },
+          { text: "" },
+          { text: "TOTAL DUE: 800.00", field: "FT_INVOICE_TOTAL", prefix: "TOTAL DUE: ", value: "800.00", status: "Correct" }
+        ]
+      }
+    ]
+  }
 ];
 
-// Ordered body lines for a document; tagged lines become report fields with a computed box.
-function docSpec(doc, i) {
-  const po = `PO-${doc.number}`;
-  return [
-    { text: `Vendor: ${doc.vendor}`, field: "FT_VENDOR_NAME", prefix: "Vendor: ", value: doc.vendor, status: "Correct" },
-    { text: `Invoice #: ${doc.number}`, field: "FT_INVOICE_NUMBER", prefix: "Invoice #: ", value: doc.number, status: "Correct" },
-    { text: `Date: ${doc.date}`, field: "FT_ISSUE_DATE", prefix: "Date: ", value: doc.date, status: "Correct" },
-    { text: `PO Number: ${po}`, field: "FT_PO_NUMBER", prefix: "PO Number: ", value: po, status: i === 2 ? "MisAssignment" : "Correct" },
-    { text: "" },
-    { text: "Description            Qty     Amount" },
-    { text: `Professional services    1     ${doc.total}` },
-    { text: "" },
-    { text: `TOTAL DUE: ${doc.captured}`, field: "FT_INVOICE_TOTAL", prefix: "TOTAL DUE: ", value: doc.captured, status: doc.captured === doc.total ? "Correct" : "WrongInput", trueValue: doc.total }
-  ];
-}
-function fieldsFor(doc, i) {
-  return docSpec(doc, i)
-    .map((line, idx) => (line.field ? { name: line.field, value: line.value, status: line.status, trueValue: line.trueValue ?? line.value, loc: valueBox(idx, line.prefix, line.value) } : null))
-    .filter(Boolean);
+// All report fields for a document, with the page index (0-based) and computed box.
+function fieldsFor(doc) {
+  const out = [];
+  doc.pages.forEach((pg, pageIdx) => {
+    pg.lines.forEach((line, lineIdx) => {
+      if (!line.field) return;
+      out.push({ name: line.field, value: line.value, status: line.status, trueValue: line.trueValue ?? line.value, page: pageIdx, loc: valueBox(lineIdx, line.prefix, line.value) });
+    });
+  });
+  return out;
 }
 
 // ── flatReportData.csv ──
@@ -111,10 +160,10 @@ function csvField(v) {
 }
 const COLUMNS = ["SourceDocId", "BatchId", "InputFileName", "DocumentType", "FieldName", "TrueValue", "CapturedValue", "FieldStatus", "TrainingPass", "CapturedPage", "CaptureLocation", "Confidence"];
 const rows = [COLUMNS.join(",")];
-DOCS.forEach((doc, i) => {
-  fieldsFor(doc, i).forEach((f) => {
+DOCUMENTS.forEach((doc) => {
+  fieldsFor(doc).forEach((f) => {
     rows.push(
-      [doc.docId, `Batch-SAMPLE-${doc.number}`, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", 0, f.loc, f.status === "Correct" ? 96 : 41]
+      [doc.docId, doc.batchName, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", f.page, f.loc, f.status === "Correct" ? 96 : 41]
         .map(csvField)
         .join(",")
     );
@@ -123,45 +172,45 @@ DOCS.forEach((doc, i) => {
 fs.writeFileSync(path.join(OUT, "flatReportData.csv"), rows.join("\n"), "utf8");
 
 // ── TrainingPassSummary.csv (so the dashboard has metrics too) ──
-const summary = [
-  "Label,V1,V2,V3",
-  "Total Batches,3,,",
-  "Total Exceptional Batches,1,,",
-  "Total Processed Documents,3,,",
-  "Total Processed Pages,3,,",
-  "Field Accuracy (correct/all) %,86.7,,",
-  "Field and Position Accuracy %,80.0,,",
-  "Labor Savings(Chars) %,78.0,,",
-  "Labor Savings(Fields) %,73.5,,",
-  "Training Pass 1,86.7,3,1"
-];
-fs.writeFileSync(path.join(OUT, "TrainingPassSummary.csv"), summary.join("\n"), "utf8");
+fs.writeFileSync(
+  path.join(OUT, "TrainingPassSummary.csv"),
+  [
+    "Label,V1,V2,V3",
+    "Total Batches,4,,",
+    "Total Exceptional Batches,2,,",
+    "Total Processed Documents,4,,",
+    "Total Processed Pages,5,,",
+    "Field Accuracy (correct/all) %,85.0,,",
+    "Field and Position Accuracy %,79.0,,",
+    "Labor Savings(Chars) %,78.0,,",
+    "Labor Savings(Fields) %,73.5,,",
+    "Training Pass 1,85.0,4,2"
+  ].join("\n"),
+  "utf8"
+);
 
-// ── the BatchData zip (all artifacts: PDFs + CapturedData.json + BatchInfo.json + info.txt) ──
+// ── the BatchData zip (all artifacts) ──
 (async () => {
   const zip = new JSZip();
   zip.file("info.txt", ["--- System Information ---", "App Version: SAMPLE", "ancoraDocs Version: synthetic", "", "--- Download Filters ---", "Synthetic test export — safe, no real data."].join("\n"));
   zip.file("RegionTemplates.td", "synthetic region templates placeholder");
   zip.file(`BatchData/${TYPE_ID}/BatchTypeInfo.json`, JSON.stringify({ Id: TYPE_ID, Name: "SAMPLE Batch Type" }));
 
-  DOCS.forEach((doc, i) => {
+  DOCUMENTS.forEach((doc) => {
     const base = `BatchData/${TYPE_ID}/Batches/${doc.batchId}`;
-    zip.file(
-      `${base}/BatchInfo.json`,
-      JSON.stringify({ Id: doc.batchId, Name: `Batch-SAMPLE-${doc.number}`, Status: "Completed", DocumentCount: "1", TotalPageCount: "1", Documents: [{ Id: doc.docId, Type: "Invoice", IsExceptional: String(doc.captured !== doc.total), Pages: [{ Type: "regular" }] }] })
-    );
+    zip.file(`${base}/BatchInfo.json`, JSON.stringify({ Id: doc.batchId, Name: doc.batchName, Status: "Completed", DocumentCount: "1", TotalPageCount: String(doc.pages.length), Documents: [{ Id: doc.docId, Type: "Invoice", Pages: doc.pages.map(() => ({ Type: "regular" })) }] }));
     zip.file(
       `${base}/${doc.docId}/CapturedData.json`,
       JSON.stringify({
         FtfName: "SAMPLE",
-        Pages: [{ Width: Math.round(PAGE_W_PT * K), Height: Math.round(PAGE_H_PT * K) }],
-        Fields: fieldsFor(doc, i).map((f) => {
+        Pages: doc.pages.map(() => ({ Width: Math.round(PAGE_W_PT * K), Height: Math.round(PAGE_H_PT * K) })),
+        Fields: fieldsFor(doc).map((f) => {
           const [l, t, r, b] = f.loc.split(",").map(Number);
-          return { Name: f.name, Value: f.value, PageIndex: 0, Region: { Content: f.value, Rectangle: { m_nLeft: l, m_nTop: t, m_nRight: r, m_nBottom: b } } };
+          return { Name: f.name, Value: f.value, PageIndex: f.page, Region: { Content: f.value, Rectangle: { m_nLeft: l, m_nTop: t, m_nRight: r, m_nBottom: b } } };
         })
       })
     );
-    zip.file(`${base}/${doc.docId}/InputFiles/${doc.file}`, makePdf(`INVOICE ${doc.number}`, docSpec(doc, i).map((l) => l.text)));
+    zip.file(`${base}/${doc.docId}/InputFiles/${doc.file}`, makePdf(doc.pages.map((pg) => ({ title: pg.title, lines: pg.lines.map((l) => l.text) }))));
   });
 
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
@@ -174,20 +223,23 @@ fs.writeFileSync(path.join(OUT, "TrainingPassSummary.csv"), summary.join("\n"), 
       "Synthetic AncoraLens test artifacts (no real data).",
       "",
       "Files:",
-      `  ${zipName}        - BatchData export (3 synthetic invoice PDFs + JSON)`,
-      "  flatReportData.csv          - detailed report matching the 3 documents",
+      `  ${zipName}        - BatchData export (4 synthetic invoice PDFs + JSON)`,
+      "  flatReportData.csv          - detailed report matching the documents",
       "  TrainingPassSummary.csv     - dashboard metrics",
       "",
-      "Region boxes are computed from where the value text is drawn in each PDF, so the",
-      "viewer overlay lands on the actual fields.",
+      "Region boxes are computed from where the value text is drawn, so the viewer overlay lands",
+      "on the actual fields. The page each field is on comes from the CapturedPage column.",
       "",
       "How to test the document viewer:",
       "  1. Upload Data -> 'Details' tile    -> flatReportData.csv",
       "  2. Upload Data -> 'Metrics' tile    -> TrainingPassSummary.csv (optional, dashboard)",
       `  3. Upload Data -> 'Doc Images' tile -> ${zipName}`,
       "  4. Detailed Report -> expand a batch -> 'View document'.",
-      "     FT_INVOICE_TOTAL on Batch-SAMPLE-1002 is a WrongInput (red) error;",
-      "     FT_PO_NUMBER on Batch-SAMPLE-1003 is a warning. Click a field row to locate it."
+      "     - Batch-SAMPLE-1002: FT_INVOICE_TOTAL is a WrongInput (red) error.",
+      "     - Batch-SAMPLE-1003: FT_PO_NUMBER is a warning.",
+      "     - Batch-SAMPLE-1004: MULTI-PAGE. Header fields on page 1; line items on page 2,",
+      "       where FT_LINE_2_AMOUNT is a red error. Use the page arrows, or click that field",
+      "       row to jump straight to page 2 with its region highlighted."
     ].join("\n")
   );
 

@@ -67,7 +67,11 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
         pdfRef.current = pdf;
         setNumPages(pdf.numPages);
         const focusRegion = focusField && regions.find((r) => r.name === focusField);
-        setPageNum(Math.min(Math.max(1, (focusRegion?.page ?? 0) + 1), pdf.numPages));
+        // Match the per-document page-base detection used for the overlay (0- vs 1-based).
+        const pages = regions.map((r) => r.page ?? 0);
+        const base = pages.length && Math.min(...pages) >= 1 && Math.max(...pages) <= pdf.numPages ? 1 : 0;
+        const focusPage = focusRegion ? Math.min(Math.max(0, (focusRegion.page ?? 0) - base), pdf.numPages - 1) + 1 : 1;
+        setPageNum(focusPage);
         setActive(focusField);
       } catch (err) {
         if (!cancelled) setError(err?.message || "Could not open this document.");
@@ -125,11 +129,23 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
     };
   }, [pageNum, loading, docIndex]);
 
-  // Regions for the current page (pdf pages are 1-based; region.page is 0-based).
+  // A field's page can be recorded 0-based (matching the export's PageIndex) or 1-based,
+  // depending on the report. Auto-detect per document so regions land on the right page of a
+  // multi-page PDF either way: if every page value is >= 1 and within the page count, it's 1-based.
+  const pageBase = useMemo(() => {
+    const pages = regions.map((r) => r.page ?? 0);
+    if (!pages.length) return 0;
+    return Math.min(...pages) >= 1 && Math.max(...pages) <= numPages ? 1 : 0;
+  }, [regions, numPages]);
+  // 0-based page index for a region, clamped into range so a stray value still shows somewhere.
+  const pageOf = (r) => Math.min(Math.max(0, (r.page ?? 0) - pageBase), Math.max(0, numPages - 1));
+
+  // Regions for the current page (pdf pages are 1-based; pageOf is normalized 0-based).
   const pageRegions = useMemo(
     () =>
-      regions.filter((r) => (r.page ?? 0) + 1 === pageNum && (!errorsOnly || r.kind === "error")),
-    [regions, pageNum, errorsOnly]
+      regions.filter((r) => pageOf(r) + 1 === pageNum && (!errorsOnly || r.kind === "error")),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [regions, pageNum, errorsOnly, pageBase, numPages]
   );
 
   const errorCount = useMemo(() => regions.filter((r) => r.kind === "error").length, [regions]);
