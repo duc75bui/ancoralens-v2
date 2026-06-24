@@ -136,8 +136,14 @@ function stripPageMetadata(region) {
   return stripped;
 }
 
-function isRegionOnPage(region, pageNum, numPages, fallbackBase) {
-  if (hasUnknownPage(region)) return true;
+// `primaryPage` (a 0-based index) is the document's resolved main content page once "Find pages" has
+// placed at least one box. Before any box is placed it is null, so unknown boxes are sprayed on every
+// page. After OCR/text resolution it is set, and the remaining unmatched boxes collapse onto that page
+// instead of being redrawn as duplicates on every other page.
+function isRegionOnPage(region, pageNum, numPages, fallbackBase, primaryPage = null) {
+  if (hasUnknownPage(region)) {
+    return primaryPage == null ? true : primaryPage + 1 === pageNum;
+  }
   const index = pageIndexOf(region, numPages, fallbackBase);
   return index !== null && index + 1 === pageNum;
 }
@@ -400,6 +406,27 @@ function hintsFromPageTexts(targets, pageTexts, source) {
   );
 }
 
+// A value can legitimately appear on more than one page (repeated invoice numbers, headers, ...), which
+// would otherwise pin the box to every matching page and redraw it as a duplicate. Collapse each hint to
+// a single page, preferring the page the most other boxes already agree on (the document's main content
+// page) so the whole set lands together instead of scattering.
+function consolidateHintsToSinglePage(hints) {
+  const tally = {};
+  Object.values(hints).forEach((hint) => {
+    if (hint?.pages?.length === 1) tally[hint.pages[0]] = (tally[hint.pages[0]] || 0) + 1;
+  });
+  const consensusEntry = Object.entries(tally).sort((left, right) => right[1] - left[1])[0];
+  const consensusPage = consensusEntry ? Number(consensusEntry[0]) : null;
+
+  return Object.fromEntries(
+    Object.entries(hints).map(([key, hint]) => {
+      if (!hint?.pages?.length || hint.pages.length === 1) return [key, hint];
+      const page = consensusPage != null && hint.pages.includes(consensusPage) ? consensusPage : Math.min(...hint.pages);
+      return [key, { ...hint, pages: [page] }];
+    })
+  );
+}
+
 async function renderPageForOcr(page, rotation) {
   const viewport = page.getViewport({ scale: OCR_RENDER_SCALE, rotation });
   const canvas = document.createElement("canvas");
@@ -561,18 +588,41 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
 
   const pageBase = useMemo(() => inferPageBase(effectiveRegions, numPages), [effectiveRegions, numPages]);
 
-  // Regions for the current page. Known-page boxes stay page-specific; unknown-page boxes are
-  // repeated with a visible warning so the user can manually find the matching page.
+  // The document's resolved main content page: the page index carrying the most placed boxes. Null
+  // until "Find pages" places at least one box (multi-page docs start fully stripped). Once set, the
+  // unmatched boxes collapse here instead of being sprayed as duplicates on every page.
+  const primaryPage = useMemo(() => {
+    const tally = new Map();
+    effectiveRegions.forEach((region) =>
+      regionBoxes(region).forEach((box) => {
+        if (hasUnknownPage(box)) return;
+        const index = pageIndexOf(box, numPages, pageBase);
+        if (index != null) tally.set(index, (tally.get(index) || 0) + 1);
+      })
+    );
+    let best = null;
+    let bestCount = 0;
+    tally.forEach((count, index) => {
+      if (count > bestCount) {
+        bestCount = count;
+        best = index;
+      }
+    });
+    return best;
+  }, [effectiveRegions, numPages, pageBase]);
+
+  // Regions for the current page. Known-page boxes stay page-specific; unmatched boxes are sprayed on
+  // every page until Find pages resolves a primary page, after which they collapse onto it.
   const pageRegions = useMemo(
     () =>
       effectiveRegions.filter(
         (r) =>
-          (regionList(r.captureRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase)) ||
-            regionList(r.trueRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase)) ||
-            (hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase))) &&
+          (regionList(r.captureRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase, primaryPage)) ||
+            regionList(r.trueRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase, primaryPage)) ||
+            (hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase, primaryPage))) &&
           (!errorsOnly || r.kind === "error")
       ),
-    [effectiveRegions, pageNum, errorsOnly, pageBase, numPages]
+    [effectiveRegions, pageNum, errorsOnly, pageBase, numPages, primaryPage]
   );
 
   const errorCount = useMemo(() => regions.filter((r) => r.kind === "error").length, [regions]);
@@ -670,6 +720,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
         return;
       }
 
+      hints = consolidateHintsToSinglePage(hints);
       setPageHints((currentHints) => ({ ...currentHints, ...hints }));
       const firstPage = Math.min(...Object.values(hints).flatMap((hint) => hint.pages)) + 1;
       if (Number.isFinite(firstPage)) setPageNum(firstPage);
@@ -692,8 +743,13 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <span>
               {regions.length} field{regions.length === 1 ? "" : "s"}
               {errorCount > 0 && <em className="dv-err-badge">{errorCount} region error{errorCount === 1 ? "" : "s"}</em>}
-              {numPages > 1 && !pagesReliable && (
+              {numPages > 1 && !pagesReliable && primaryPage == null && (
                 <em className="dv-warn-badge">page data unreliable — shown on every page</em>
+              )}
+              {numPages > 1 && !pagesReliable && primaryPage != null && unknownPageCount > 0 && (
+                <em className="dv-warn-badge">
+                  {unknownPageCount} unmatched box{unknownPageCount === 1 ? "" : "es"} on page {primaryPage + 1}
+                </em>
               )}
               {numPages > 1 && pagesReliable && unknownPageCount > 0 && (
                 <em className="dv-warn-badge">{unknownPageCount} page-unknown box{unknownPageCount === 1 ? "" : "es"}</em>
@@ -786,7 +842,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <div className="dv-canvas-wrap" style={{ width: layout.width || undefined }}>
               <canvas ref={canvasRef} className="dv-canvas" />
               <div className="dv-overlay" style={{ width: layout.width, height: layout.height }}>
-                {numPages > 1 && unknownPageCount > 0 && (
+                {numPages > 1 && unknownPageCount > 0 && primaryPage == null && (
                   <div className="dv-page-warning">
                     {pagesReliable ? (
                       <>
@@ -815,12 +871,12 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                 {layout.ready && pageRegions.map((r, i) => {
                   const isActive = active && r.name === active;
                   const captureRegions = regionList(r.captureRegion).filter((region) =>
-                    isRegionOnPage(region, pageNum, numPages, pageBase)
+                    isRegionOnPage(region, pageNum, numPages, pageBase, primaryPage)
                   );
                   const truthRegions = regionList(r.trueRegion).filter((region) =>
-                    isRegionOnPage(region, pageNum, numPages, pageBase)
+                    isRegionOnPage(region, pageNum, numPages, pageBase, primaryPage)
                   );
-                  const directRegions = hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase) ? [r] : [];
+                  const directRegions = hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase, primaryPage) ? [r] : [];
                   return (
                     <Fragment key={`${r.name}-${i}`}>
                       {truthRegions.map((truthRegion, truthIndex) => (
