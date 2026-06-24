@@ -98,24 +98,18 @@ function hasUnknownPage(region) {
   return page === null || page < 0;
 }
 
-// The capture pipeline's page numbers (PageIndex / CapturedPage) are frequently wrong or absent for
-// multi-page documents. We only trust them when they actually discriminate pages: a single-page PDF
-// is trivially consistent, and a multi-page PDF is trusted only if its boxes resolve to MORE THAN ONE
-// distinct page. If every box collapses onto a single page index of a multi-page doc, that is the
-// "pipeline never recorded real pages" signature — the metadata is treated as unreliable and dropped
-// so the boxes fall back to being shown on every page (and become relocatable by "Find pages").
-function pageMetadataReliable(regions, numPages) {
-  if (numPages <= 1) return true;
-  const base = inferPageBase(regions, numPages);
-  const knownPages = new Set();
-  regions.forEach((region) =>
-    regionBoxes(region).forEach((box) => {
-      if (hasUnknownPage(box)) return;
-      const index = pageIndexOf(box, numPages, base);
-      if (index !== null) knownPages.add(index);
-    })
-  );
-  return knownPages.size > 1;
+// The capture pipeline's page numbers (PageIndex / CapturedPage) do not map to the combined PDF's
+// pages for multi-page exports. These documents are assembled as [separator sheet, invoice, ...], and
+// a field's page index refers to its invoice's *internal* page, not the combined file — so index 0
+// lands on the QR/"PARTS RECEIVING" separator instead of the invoice. The indices may even discriminate
+// (e.g. {0,1}) yet still be wrong, so "does it discriminate" is not a usable trust signal.
+//
+// Treat raw page indices as untrustworthy for ANY multi-page document and drop them: every box then
+// falls back to being shown on every page (so the correct page is always covered) and becomes a target
+// for "Find pages", which pins boxes to the right page by matching their content. Single-page documents
+// have nothing to get wrong, so their metadata is kept.
+function pageMetadataReliable(_regions, numPages) {
+  return numPages <= 1;
 }
 
 function stripBoxPage(box) {
@@ -801,7 +795,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                       </>
                     ) : (
                       <>
-                        Page data for this document is inconsistent (every field reports the same page), so all {unknownPageCount} region
+                        Page numbers in this document don’t reliably match its PDF pages, so all {unknownPageCount} region
                         box{unknownPageCount === 1 ? "" : "es"} are shown on every page. Use “Find pages” to locate them by content.
                       </>
                     )}
