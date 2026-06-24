@@ -21,7 +21,7 @@ import {
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { downloadCsv } from "../utils/csv.js";
 import DocumentViewer from "./DocumentViewer.jsx";
-import { parseCaptureLocation, resolveDoc } from "../utils/batchImages.js";
+import { findJsonFieldRegion, parseCaptureLocation, resolveDoc } from "../utils/batchImages.js";
 import {
   buildDetailModel,
   countLineItems,
@@ -95,6 +95,68 @@ function matchesSeverity(row, severity) {
   if (severity === "all") return true;
   const kind = statusKind(row.FieldStatus || row.Status || row.Result || "");
   return severity === "errors" ? kind === "error" : kind === "error" || kind === "warning";
+}
+
+function isFinitePage(value) {
+  if (value == null || value === "") return false;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0;
+}
+
+function withFallbackPage(region, fallback) {
+  if (!region) return null;
+  const hasRegionPage = isFinitePage(region.page);
+  const hasRegionBase = isFinitePage(region.pageBase);
+  const hasFallbackPage = isFinitePage(fallback?.page);
+  const hasFallbackBase = isFinitePage(fallback?.pageBase);
+
+  if (!hasRegionBase && hasFallbackPage && hasFallbackBase) {
+    return { ...region, page: fallback.page, pageBase: fallback.pageBase };
+  }
+
+  return {
+    ...region,
+    page: hasRegionPage ? region.page : null,
+    pageBase: hasRegionBase ? region.pageBase : null
+  };
+}
+
+function sameRegion(left, right) {
+  if (!left || !right) return false;
+  return ["page", "left", "top", "right", "bottom"].every((key) => Math.round(Number(left[key])) === Math.round(Number(right[key])));
+}
+
+function regionWithField(region, row) {
+  if (!region) return null;
+  return {
+    ...region,
+    name: row.FieldName,
+    value: row.CapturedValue || row.Value,
+    trueValue: row.TrueValue,
+    status: row.FieldStatus || row.Status || row.Result || ""
+  };
+}
+
+function rowRegions(row, doc) {
+  // Page columns are 0-based (0 = first page, -1 = unassigned). Accept the common name variants.
+  const truePage = row.TruePage ?? row.TruepageIndex ?? row.TruePageIndex;
+  const capturedPage = row.CapturedPage ?? row.CapturePage ?? row.CapturedPageIndex;
+  const trueCsv = parseCaptureLocation(row.TrueLocation, truePage);
+  const trueJson = doc?.trueData ? findJsonFieldRegion(doc, row.FieldName, "trueData") : null;
+  const trueRegion = withFallbackPage(trueCsv || trueJson, trueJson);
+
+  const capturedCsv = parseCaptureLocation(row.CaptureLocation, capturedPage);
+  const capturedJson = findJsonFieldRegion(doc, row.FieldName, "capturedData");
+  const capturedRegion = withFallbackPage(capturedCsv || capturedJson, capturedJson || trueRegion);
+
+  return { capturedRegion, trueRegion };
+}
+
+function rowHasLocatableRegion(imageIndex, row) {
+  const doc = resolveDoc(imageIndex, { inputFileName: row?.InputFileName, sourceDocId: row?.SourceDocId });
+  if (!doc) return false;
+  const { capturedRegion, trueRegion } = rowRegions(row, doc);
+  return Boolean(capturedRegion || trueRegion);
 }
 
 function LineItemsTable({ lineItems, assignableOnly = false }) {
@@ -359,7 +421,7 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
     const allRows = [...batch.rows, ...batch.lineItemRows];
     const groups = {};
     allRows.forEach((row) => {
-      const key = row.InputFileName || row.SourceDocId || "document";
+      const key = row.SourceDocId || row.InputFileName || "document";
       (groups[key] ||= []).push(row);
     });
     return Object.values(groups)
@@ -369,10 +431,19 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
         if (!doc) return null;
         const regions = rows
           .map((row) => {
-            const loc = parseCaptureLocation(row.CaptureLocation, row.CapturedPage);
-            if (!loc) return null;
+            const { capturedRegion, trueRegion } = rowRegions(row, doc);
+            if (!capturedRegion && !trueRegion) return null;
             const status = row.FieldStatus || row.Status || row.Result || "";
-            return { name: row.FieldName, value: row.CapturedValue || row.Value, status, kind: statusKind(status), ...loc };
+            const kind = statusKind(status);
+            return {
+              name: row.FieldName,
+              value: row.CapturedValue || row.Value,
+              trueValue: row.TrueValue,
+              status,
+              kind,
+              captureRegion: regionWithField(capturedRegion, row),
+              trueRegion: trueRegion && !sameRegion(capturedRegion, trueRegion) ? regionWithField(trueRegion, row) : null
+            };
           })
           .filter(Boolean);
         return { label: doc.fileName, doc, regions };
@@ -387,7 +458,8 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
     let focusField = null;
     if (focusRow) {
       const target = String(focusRow.InputFileName || "").toLowerCase();
-      const idx = docs.findIndex((d) => d.label.toLowerCase() === target);
+      const targetDocId = String(focusRow.SourceDocId || "");
+      const idx = docs.findIndex((d) => (targetDocId && d.doc.docId === targetDocId) || d.label.toLowerCase() === target);
       if (idx >= 0) initialDocIndex = idx;
       focusField = focusRow.FieldName;
     }
@@ -411,10 +483,6 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
 
   const expandAllLineItems = () => {
     setExpandedLineItems(Object.fromEntries(pageBatchIds.map((id) => [id, true])));
-  };
-
-  const collapseAllLineItems = () => {
-    setExpandedLineItems({});
   };
 
   const expandSummary = () => {
@@ -645,7 +713,7 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
 
                   {open &&
                     headerRows.map((row, index) => {
-                      const locatable = hasImage && parseCaptureLocation(row.CaptureLocation, row.CapturedPage);
+                      const locatable = hasImage && rowHasLocatableRegion(imageIndex, row);
                       return (
                         <tr
                           key={`${batchId}-${index}`}

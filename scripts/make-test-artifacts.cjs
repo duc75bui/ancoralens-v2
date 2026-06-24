@@ -137,7 +137,11 @@ const DOCUMENTS = [
           { text: "Widget A    qty 2    500.00", field: "FT_LINE_1_AMOUNT", prefix: "Widget A    qty 2    ", value: "500.00", status: "Correct" },
           { text: "Widget B    qty 1    3OO.OO", field: "FT_LINE_2_AMOUNT", prefix: "Widget B    qty 1    ", value: "3OO.OO", status: "WrongInput", trueValue: "300.00" },
           { text: "" },
-          { text: "TOTAL DUE: 800.00", field: "FT_INVOICE_TOTAL", prefix: "TOTAL DUE: ", value: "800.00", status: "Correct" }
+          { text: "TOTAL DUE: 800.00", field: "FT_INVOICE_TOTAL", prefix: "TOTAL DUE: ", value: "800.00", status: "Correct" },
+          // A formula/calculated field: TruePage/CapturedPage = -1 (unassigned). Drawn on page 2, but the
+          // page columns say "no page", so the viewer treats it as unknown and resolves by content / culls
+          // it from pages where it lands on blank space.
+          { text: "Calc Discount: 40.00", field: "FT_CALC_DISCOUNT", prefix: "Calc Discount: ", value: "40.00", status: "Correct", pageOverride: -1 }
         ]
       }
     ]
@@ -217,13 +221,15 @@ const DOCUMENTS = [
   }
 ];
 
-// All report fields for a document, with the page index (0-based) and computed box.
+// All report fields for a document. `page` is the 0-based page column value (pageOverride lets a field
+// declare -1 = unassigned); `loc` is the box computed from where the value is actually drawn.
 function fieldsFor(doc) {
   const out = [];
   doc.pages.forEach((pg, pageIdx) => {
     pg.lines.forEach((line, lineIdx) => {
       if (!line.field) return;
-      out.push({ name: line.field, value: line.value, status: line.status, trueValue: line.trueValue ?? line.value, page: pageIdx, loc: valueBox(lineIdx, line.prefix, line.value) });
+      const page = line.pageOverride != null ? line.pageOverride : pageIdx;
+      out.push({ name: line.field, value: line.value, status: line.status, trueValue: line.trueValue ?? line.value, page, loc: valueBox(lineIdx, line.prefix, line.value) });
     });
   });
   return out;
@@ -234,15 +240,17 @@ function csvField(v) {
   const s = String(v ?? "");
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
-const COLUMNS = ["SourceDocId", "BatchId", "InputFileName", "DocumentType", "FieldName", "TrueValue", "CapturedValue", "FieldStatus", "TrainingPass", "CapturedPage", "CaptureLocation", "Confidence"];
+const COLUMNS = ["SourceDocId", "BatchId", "InputFileName", "DocumentType", "FieldName", "TrueValue", "CapturedValue", "FieldStatus", "TrainingPass", "CapturedPage", "TruePage", "CaptureLocation", "TrueLocation", "Confidence"];
 const rows = [COLUMNS.join(",")];
 DOCUMENTS.forEach((doc) => {
   fieldsFor(doc).forEach((f) => {
-    // When a document has no page references, CapturedPage is left blank so the viewer must resolve the
-    // page from content rather than trusting metadata.
+    // Page columns are 0-based (-1 = unassigned). Documents flagged unreferenced leave them blank so the
+    // viewer must resolve the page from content instead of trusting metadata.
     const capturedPage = doc.unreferencedPages ? "" : f.page;
+    const truePage = doc.unreferencedPages ? "" : f.page;
+    const trueLoc = doc.unreferencedPages ? "" : f.loc;
     rows.push(
-      [doc.docId, doc.batchName, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", capturedPage, f.loc, f.status === "Correct" ? 96 : 41]
+      [doc.docId, doc.batchName, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", capturedPage, truePage, f.loc, trueLoc, f.status === "Correct" ? 96 : 41]
         .map(csvField)
         .join(",")
     );
