@@ -298,6 +298,8 @@ export function parseSummaryMetrics(summaryRows = [], detailRows = []) {
 
       const { text, number } = extracted;
       const lower = rawLabel.toLowerCase().trim();
+      // Punctuation-insensitive form so "Pass-through", "Pass Through", "PassThrough" all match.
+      const compact = lower.replace(/[^a-z0-9]/g, "");
 
       if (lower.includes("region template matched documents count")) {
         groups.regionTemplate.push({ label: "Matched Docs", value: text });
@@ -342,7 +344,11 @@ export function parseSummaryMetrics(summaryRows = [], detailRows = []) {
           groups.general.push({ label: "Labor Sav (Fields) %", value: number, numeric: number, isPercentage: true });
         } else if (lower.includes("field accuracy (correct/all)")) {
           groups.general.push({ label: "Field Acc %", value: number, numeric: number, isPercentage: true });
-        } else if (lower.includes("pass-through rate pages")) {
+        } else if (compact.includes("passthrough") && compact.includes("page")) {
+          groups.general.push({ label: "Pass-Through Pages %", value: number, numeric: number, isPercentage: true });
+        } else if (compact.includes("passthrough") && (compact.includes("document") || compact.includes("doc"))) {
+          groups.general.push({ label: "Pass-Through Docs %", value: number, numeric: number, isPercentage: true });
+        } else if (compact.includes("passthrough")) {
           groups.general.push({ label: "Pass-Through %", value: number, numeric: number, isPercentage: true });
         } else if (lower.includes("field and position accuracy") && lower.includes("%")) {
           groups.general.push({ label: "Field & Pos Acc %", value: number, numeric: number, isPercentage: true });

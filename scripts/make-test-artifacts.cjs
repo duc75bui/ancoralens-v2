@@ -268,6 +268,8 @@ fs.writeFileSync(
     "Total Processed Documents,6,,",
     "Total Processed Pages,12,,",
     "Field Accuracy (correct/all) %,85.0,,",
+    "Pass-through Rate Pages %,83.69,,",
+    "Pass-through Rate Documents %,98.34,,",
     "Field and Position Accuracy %,79.0,,",
     "Labor Savings(Chars) %,78.0,,",
     "Labor Savings(Fields) %,73.5,,",

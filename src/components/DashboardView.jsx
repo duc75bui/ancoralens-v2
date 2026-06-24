@@ -794,17 +794,19 @@ function EditorialOverview({ groups, timelineData, docTypeData, onOpenPassDashbo
   // Pass-Through % from the summary CSV; when that row is absent, derive a batch-level STP
   // rate from exceptions ((total − exception) / total); only then fall back to field accuracy.
   const canDeriveStp = excAvail && totalBatches > 0;
-  const passThrough = has("Pass-Through %")
-    ? num("Pass-Through %")
+  // Prefer the explicit page-level pass-through row (new "Pages" label, or the older generic one).
+  const passLabel = has("Pass-Through Pages %") ? "Pass-Through Pages %" : has("Pass-Through %") ? "Pass-Through %" : null;
+  const passThrough = passLabel
+    ? num(passLabel)
     : canDeriveStp
       ? ((totalBatches - exceptionalBatches) / totalBatches) * 100
       : fieldAcc;
-  const passThroughLabel = has("Pass-Through %")
+  const passThroughLabel = passLabel
     ? "pass-through"
     : canDeriveStp
       ? "straight-through"
       : "field accuracy";
-  const passAvail = has("Pass-Through %") || canDeriveStp || accAvail;
+  const passAvail = Boolean(passLabel) || canDeriveStp || accAvail;
 
   // Labor savings — only surfaced when the summary CSV provides it. Prefer the field-level
   // saving as the headline number and show the character-level saving as the footnote.
