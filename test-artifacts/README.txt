@@ -18,3 +18,8 @@ How to test the document viewer:
      - Batch-SAMPLE-1004: MULTI-PAGE. Header fields on page 1; line items on page 2,
        where FT_LINE_2_AMOUNT is a red error. Use the page arrows, or click that field
        row to jump straight to page 2 with its region highlighted.
+     - Batch-SAMPLE-5001: MULTI-PAGE, NO PAGE REFERENCES. Line items genuinely span pages
+       1-3 (pages 4-5 are blank), and the export carries no CapturedPage/PageIndex. On open,
+       boxes are shown on every page; click 'Find pages' to resolve them by content. Each
+       line item should snap to its real page (1, 2 or 3), pages 4-5 stay empty, and
+       FT_LINE_04_AMOUNT on page 2 is a red error.

@@ -141,6 +141,50 @@ const DOCUMENTS = [
         ]
       }
     ]
+  },
+  // Multi-page document with line items genuinely spread across pages 1-3 and BLANK pages 4-5, and with
+  // NO page references at all (blank CapturedPage, no PageIndex). This exercises the viewer's content-
+  // based resolution: each distinctive line-item value must be matched to its own page, the line items
+  // must land on pages 1-3 (not collapsed onto one page), and the blank pages 4-5 must stay empty.
+  {
+    batchId: "b0000005-0000-0000-0000-000000000005",
+    docId: "d0000005-0000-0000-0000-000000000005",
+    file: "PO_SAMPLE_5001_multipage_unreferenced.pdf",
+    batchName: "Batch-SAMPLE-5001",
+    unreferencedPages: true,
+    pages: [
+      {
+        title: "PURCHASE ORDER 5001 - PAGE 1 OF 5",
+        lines: [
+          { text: "Vendor: Northwind Traders", field: "FT_VENDOR_NAME", prefix: "Vendor: ", value: "Northwind Traders", status: "Correct" },
+          { text: "PO Number: PO-5001", field: "FT_PO_NUMBER", prefix: "PO Number: ", value: "PO-5001", status: "Correct" },
+          { text: "" },
+          { text: "Line items (page 1 of 3):" },
+          { text: "PN-AX1190  Bearing assembly   412.55", field: "FT_LINE_01_AMOUNT", prefix: "PN-AX1190  Bearing assembly   ", value: "412.55", status: "Correct" },
+          { text: "PN-BX2281  Hydraulic seal      88.20", field: "FT_LINE_02_AMOUNT", prefix: "PN-BX2281  Hydraulic seal      ", value: "88.20", status: "Correct" }
+        ]
+      },
+      {
+        title: "PURCHASE ORDER 5001 - PAGE 2 OF 5",
+        lines: [
+          { text: "Line items (page 2 of 3):" },
+          { text: "PN-CX3372  Coupling flange   1530.00", field: "FT_LINE_03_AMOUNT", prefix: "PN-CX3372  Coupling flange   ", value: "1530.00", status: "Correct" },
+          { text: "PN-DX4463  Gasket kit          47.99", field: "FT_LINE_04_AMOUNT", prefix: "PN-DX4463  Gasket kit          ", value: "47.99", status: "WrongInput", trueValue: "479.90" }
+        ]
+      },
+      {
+        title: "PURCHASE ORDER 5001 - PAGE 3 OF 5",
+        lines: [
+          { text: "Line items (page 3 of 3):" },
+          { text: "PN-EX5554  Drive shaft        209.10", field: "FT_LINE_05_AMOUNT", prefix: "PN-EX5554  Drive shaft        ", value: "209.10", status: "Correct" },
+          { text: "PN-FX6645  Control module     765.40", field: "FT_LINE_06_AMOUNT", prefix: "PN-FX6645  Control module     ", value: "765.40", status: "Correct" },
+          { text: "" },
+          { text: "GRAND TOTAL: 3053.24", field: "FT_GRAND_TOTAL", prefix: "GRAND TOTAL: ", value: "3053.24", status: "Correct" }
+        ]
+      },
+      { title: "PAGE 4 OF 5", lines: ["This page intentionally left blank."] },
+      { title: "PAGE 5 OF 5", lines: ["This page intentionally left blank."] }
+    ]
   }
 ];
 
@@ -165,8 +209,11 @@ const COLUMNS = ["SourceDocId", "BatchId", "InputFileName", "DocumentType", "Fie
 const rows = [COLUMNS.join(",")];
 DOCUMENTS.forEach((doc) => {
   fieldsFor(doc).forEach((f) => {
+    // When a document has no page references, CapturedPage is left blank so the viewer must resolve the
+    // page from content rather than trusting metadata.
+    const capturedPage = doc.unreferencedPages ? "" : f.page;
     rows.push(
-      [doc.docId, doc.batchName, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", f.page, f.loc, f.status === "Correct" ? 96 : 41]
+      [doc.docId, doc.batchName, doc.file, "Invoice", f.name, f.trueValue, f.value, f.status, "Training Pass 1", capturedPage, f.loc, f.status === "Correct" ? 96 : 41]
         .map(csvField)
         .join(",")
     );
@@ -179,15 +226,15 @@ fs.writeFileSync(
   path.join(OUT, "TrainingPassSummary.csv"),
   [
     "Label,V1,V2,V3",
-    "Total Batches,4,,",
-    "Total Exceptional Batches,2,,",
-    "Total Processed Documents,4,,",
-    "Total Processed Pages,5,,",
+    "Total Batches,5,,",
+    "Total Exceptional Batches,3,,",
+    "Total Processed Documents,5,,",
+    "Total Processed Pages,10,,",
     "Field Accuracy (correct/all) %,85.0,,",
     "Field and Position Accuracy %,79.0,,",
     "Labor Savings(Chars) %,78.0,,",
     "Labor Savings(Fields) %,73.5,,",
-    "Training Pass 1,85.0,4,2"
+    "Training Pass 1,85.0,5,3"
   ].join("\n"),
   "utf8"
 );
@@ -209,7 +256,10 @@ fs.writeFileSync(
         Pages: doc.pages.map(() => ({ Width: Math.round(PAGE_W_PT * K), Height: Math.round(PAGE_H_PT * K) })),
         Fields: fieldsFor(doc).map((f) => {
           const [l, t, r, b] = f.loc.split(",").map(Number);
-          return { Name: f.name, Value: f.value, PageIndex: f.page, Region: { Content: f.value, Rectangle: { m_nLeft: l, m_nTop: t, m_nRight: r, m_nBottom: b } } };
+          const field = { Name: f.name, Value: f.value, Region: { Content: f.value, Rectangle: { m_nLeft: l, m_nTop: t, m_nRight: r, m_nBottom: b } } };
+          // Omit PageIndex for unreferenced docs so neither CSV nor JSON carries a page hint.
+          if (!doc.unreferencedPages) field.PageIndex = f.page;
+          return field;
         })
       })
     );
@@ -242,7 +292,12 @@ fs.writeFileSync(
       "     - Batch-SAMPLE-1003: FT_PO_NUMBER is a warning.",
       "     - Batch-SAMPLE-1004: MULTI-PAGE. Header fields on page 1; line items on page 2,",
       "       where FT_LINE_2_AMOUNT is a red error. Use the page arrows, or click that field",
-      "       row to jump straight to page 2 with its region highlighted."
+      "       row to jump straight to page 2 with its region highlighted.",
+      "     - Batch-SAMPLE-5001: MULTI-PAGE, NO PAGE REFERENCES. Line items genuinely span pages",
+      "       1-3 (pages 4-5 are blank), and the export carries no CapturedPage/PageIndex. On open,",
+      "       boxes are shown on every page; click 'Find pages' to resolve them by content. Each",
+      "       line item should snap to its real page (1, 2 or 3), pages 4-5 stay empty, and",
+      "       FT_LINE_04_AMOUNT on page 2 is a red error."
     ].join("\n")
   );
 
