@@ -880,6 +880,10 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                     isRegionOnPage(region, pageNum, numPages, pageBase, contentPages)
                   );
                   const directRegions = hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase, contentPages) ? [r] : [];
+                  // Datasets that only export truth locations (no captured-location box) would otherwise
+                  // draw every field — including errors — as a plain blue truth box. Color the truth box
+                  // by status for error/warning fields so problems are visible even without a capture box.
+                  const truthColor = r.kind === "error" || r.kind === "warning" ? KIND_COLOR[r.kind] : KIND_COLOR.truth;
                   return (
                     <Fragment key={`${r.name}-${i}`}>
                       {truthRegions.map((truthRegion, truthIndex) => (
@@ -887,9 +891,9 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                           key={`truth-${truthIndex}`}
                           type="button"
                           className={`dv-box truth${isActive ? " active" : ""}`}
-                          style={boxStyle(truthRegion, layout, KIND_COLOR.truth)}
+                          style={boxStyle(truthRegion, layout, truthColor)}
                           onClick={() => setActive(r.name)}
-                          title={`Truth ${r.name}: ${r.trueValue ?? truthRegion.value ?? ""}${
+                          title={`Truth ${r.name}: ${r.trueValue ?? truthRegion.value ?? ""} — ${r.status || r.kind}${
                             hasUnknownPage(truthRegion) ? " - page unknown" : ""
                           }`}
                         >
