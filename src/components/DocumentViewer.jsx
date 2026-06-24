@@ -139,6 +139,13 @@ function stripPageMetadata(region) {
 // a single-content-page doc collapses them onto that one page, and a document whose line items span
 // pages 1–3 keeps them on 1–3 without spilling onto the blank pages 4–5. Resolved boxes always stay on
 // their own page, so genuinely multi-page content is preserved.
+// Human-facing physical page (1-based) for a box, mapping the 0-based stored page. -1/unknown -> "unknown".
+function physicalPageLabel(box, numPages, fallbackBase) {
+  if (hasUnknownPage(box)) return "unknown";
+  const index = pageIndexOf(box, numPages, fallbackBase);
+  return index == null ? "unknown" : String(index + 1);
+}
+
 function isRegionOnPage(region, pageNum, numPages, fallbackBase, contentPages = null) {
   if (hasUnknownPage(region)) {
     if (!contentPages || contentPages.size === 0) return true;
@@ -961,9 +968,11 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                           className={`dv-box truth${isActive ? " active" : ""}`}
                           style={boxStyle(truthRegion, layout, truthColor)}
                           onClick={() => setActive(r.name)}
-                          title={`Truth ${r.name}: ${r.trueValue ?? truthRegion.value ?? ""} — ${r.status || r.kind}${
-                            hasUnknownPage(truthRegion) ? " - page unknown" : ""
-                          }`}
+                          title={`Truth ${r.name}: ${r.trueValue ?? truthRegion.value ?? ""} — ${r.status || r.kind} — page ${physicalPageLabel(
+                            truthRegion,
+                            numPages,
+                            pageBase
+                          )}`}
                         >
                           <span className="dv-box-tag">TRUE {r.name}</span>
                         </button>
@@ -975,9 +984,11 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                           className={`dv-box${isActive ? " active" : ""}`}
                           style={boxStyle(captureRegion, layout, KIND_COLOR[r.kind] || KIND_COLOR.neutral)}
                           onClick={() => setActive(r.name)}
-                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind}${
-                            hasUnknownPage(captureRegion) ? " - page unknown" : ""
-                          }`}
+                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind} — page ${physicalPageLabel(
+                            captureRegion,
+                            numPages,
+                            pageBase
+                          )}`}
                         >
                           <span className="dv-box-tag">{r.name}</span>
                         </button>
@@ -989,9 +1000,11 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                           className={`dv-box${isActive ? " active" : ""}`}
                           style={boxStyle(directRegion, layout, KIND_COLOR[r.kind] || KIND_COLOR.neutral)}
                           onClick={() => setActive(r.name)}
-                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind}${
-                            hasUnknownPage(directRegion) ? " - page unknown" : ""
-                          }`}
+                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind} — page ${physicalPageLabel(
+                            directRegion,
+                            numPages,
+                            pageBase
+                          )}`}
                         >
                           <span className="dv-box-tag">{r.name}</span>
                         </button>
