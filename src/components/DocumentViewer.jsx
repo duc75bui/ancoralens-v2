@@ -6,33 +6,439 @@
  *
  * Props:
  *   docs: Array<{ label, doc: { getArrayBuffer() }, regions: Array<{
- *           name, value, status, kind, page, left, top, right, bottom }> }>
+ *           name, value, status, kind, captureRegion?, trueRegion? }> }>
  *   initialDocIndex?: number
  *   focusField?: string          // field Name to highlight/scroll to on open
  *   onClose: () => void
  */
-import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, RotateCcw, RotateCw, Search, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+const APP_BASE_URL = import.meta.env.BASE_URL || "/";
+const APP_ASSET_BASE = APP_BASE_URL.endsWith("/") ? APP_BASE_URL : `${APP_BASE_URL}/`;
+const PDFJS_WASM_URL = `${APP_ASSET_BASE}pdfjs/wasm/`;
+const OCR_ASSET_URL = `${APP_ASSET_BASE}ocr/`;
 
 // The export's region coordinates are OCR raster pixels. ancoraDocs rasterizes at 300 DPI, so
 // a box maps to the rendered canvas by (renderScale * 72/300). Exposed as a constant in case a
 // dataset uses a different capture resolution.
 const OCR_DPI = 300;
+const RIGHT_ANGLE_ROTATIONS = [0, 90, 180, 270];
+const OCR_RENDER_SCALE = 2;
 
-const KIND_COLOR = { error: "#ef4444", warning: "#f59e0b", success: "#22c55e", neutral: "#6E6B5C" };
+const KIND_COLOR = { error: "#ef4444", warning: "#f59e0b", success: "#22c55e", neutral: "#6E6B5C", truth: "#2B3AE8" };
+
+function finiteNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeRotation(value) {
+  return ((value % 360) + 360) % 360;
+}
+
+function hasBox(region) {
+  return [region?.left, region?.top, region?.right, region?.bottom].every((value) => finiteNumber(value) !== null);
+}
+
+function regionList(regionOrRegions) {
+  if (!regionOrRegions) return [];
+  return (Array.isArray(regionOrRegions) ? regionOrRegions : [regionOrRegions]).filter(hasBox);
+}
+
+function regionBoxes(region) {
+  return regionBoxEntries(region).map((entry) => entry.box);
+}
+
+function regionBoxEntries(region) {
+  if (!region) return [];
+  return [
+    ...regionList(region.captureRegion).map((box, boxIndex) => ({ role: "capture", box, boxIndex })),
+    ...regionList(region.trueRegion).map((box, boxIndex) => ({ role: "truth", box, boxIndex })),
+    ...(hasBox(region) ? [{ role: "region", box: region, boxIndex: 0 }] : [])
+  ];
+}
+
+function regionKey(region, index) {
+  return region?.id || `${region?.name || "field"}-${index}`;
+}
+
+function boxHintKey(region, index, role, boxIndex) {
+  return `${regionKey(region, index)}:${role}:${boxIndex}`;
+}
+
+function primaryRegion(region) {
+  return regionList(region?.captureRegion)[0] || regionList(region?.trueRegion)[0] || (hasBox(region) ? region : null);
+}
+
+function inferPageBase(regions, numPages) {
+  const pages = regions
+    .flatMap(regionBoxes)
+    .filter((r) => finiteNumber(r.pageBase) === null)
+    .map((r) => finiteNumber(r.page))
+    .filter((page) => page !== null);
+  if (!pages.length) return 0;
+  return Math.min(...pages) >= 1 && Math.max(...pages) <= numPages ? 1 : 0;
+}
+
+function pageIndexOf(region, numPages, fallbackBase = 0) {
+  const page = finiteNumber(region?.page);
+  if (page === null || page < 0) return null;
+  const base = finiteNumber(region?.pageBase) ?? fallbackBase;
+  const index = page - base;
+  return index >= 0 && index < numPages ? index : null;
+}
+
+function hasUnknownPage(region) {
+  const page = finiteNumber(region?.page);
+  return page === null || page < 0;
+}
+
+// The capture pipeline's page numbers (PageIndex / CapturedPage) are frequently wrong or absent for
+// multi-page documents. We only trust them when they actually discriminate pages: a single-page PDF
+// is trivially consistent, and a multi-page PDF is trusted only if its boxes resolve to MORE THAN ONE
+// distinct page. If every box collapses onto a single page index of a multi-page doc, that is the
+// "pipeline never recorded real pages" signature — the metadata is treated as unreliable and dropped
+// so the boxes fall back to being shown on every page (and become relocatable by "Find pages").
+function pageMetadataReliable(regions, numPages) {
+  if (numPages <= 1) return true;
+  const base = inferPageBase(regions, numPages);
+  const knownPages = new Set();
+  regions.forEach((region) =>
+    regionBoxes(region).forEach((box) => {
+      if (hasUnknownPage(box)) return;
+      const index = pageIndexOf(box, numPages, base);
+      if (index !== null) knownPages.add(index);
+    })
+  );
+  return knownPages.size > 1;
+}
+
+function stripBoxPage(box) {
+  return box ? { ...box, page: null, pageBase: null } : box;
+}
+
+function stripRegionBoxPage(boxOrBoxes) {
+  if (!boxOrBoxes) return boxOrBoxes;
+  return Array.isArray(boxOrBoxes) ? boxOrBoxes.map(stripBoxPage) : stripBoxPage(boxOrBoxes);
+}
+
+// Discard untrustworthy page metadata so every box reads as "page unknown". Coordinates are untouched,
+// so rotation inference and box drawing still work; only the (bogus) page assignment is removed.
+function stripPageMetadata(region) {
+  const stripped = {
+    ...region,
+    captureRegion: stripRegionBoxPage(region.captureRegion),
+    trueRegion: stripRegionBoxPage(region.trueRegion)
+  };
+  if (hasBox(region)) {
+    stripped.page = null;
+    stripped.pageBase = null;
+  }
+  return stripped;
+}
+
+function isRegionOnPage(region, pageNum, numPages, fallbackBase) {
+  if (hasUnknownPage(region)) return true;
+  const index = pageIndexOf(region, numPages, fallbackBase);
+  return index !== null && index + 1 === pageNum;
+}
+
+function applyPageHintToBox(box, hint) {
+  if (!box || !hasUnknownPage(box) || !hint?.pages?.length) return box;
+  return hint.pages.map((pageIndex) => ({
+    ...box,
+    page: pageIndex,
+    pageBase: 0,
+    pageInferred: true,
+    pageInferenceSource: hint.source
+  }));
+}
+
+function applyPageHintToRegionBox(boxOrBoxes, hintForBox) {
+  const boxes = regionList(boxOrBoxes);
+  if (!boxes.length) return boxOrBoxes;
+  const hinted = boxes.flatMap((box, boxIndex) => applyPageHintToBox(box, hintForBox(box, boxIndex)));
+  return Array.isArray(boxOrBoxes) || hinted.length > 1 ? hinted : hinted[0];
+}
+
+function applyPageHints(regions, hints) {
+  return regions.flatMap((region, index) => {
+    const updated = {
+      ...region,
+      captureRegion: applyPageHintToRegionBox(
+        region.captureRegion,
+        (_box, boxIndex) => hints[boxHintKey(region, index, "capture", boxIndex)]
+      ),
+      trueRegion: applyPageHintToRegionBox(
+        region.trueRegion,
+        (_box, boxIndex) => hints[boxHintKey(region, index, "truth", boxIndex)]
+      )
+    };
+    const directHint = hints[boxHintKey(region, index, "region", 0)];
+    if (!hasBox(region) || !directHint?.pages?.length || !hasUnknownPage(region)) return updated;
+
+    const hinted = applyPageHintToBox(updated, directHint);
+    return Array.isArray(hinted) ? hinted : updated;
+  });
+}
+
+function focusPageOf(region, numPages, fallbackBase) {
+  const index = pageIndexOf(region, numPages, fallbackBase);
+  return (index ?? 0) + 1;
+}
+
+function sourceSizeForRotation(baseWidthPts, baseHeightPts, rotation) {
+  const swap = normalizeRotation(rotation) % 180 !== 0;
+  return {
+    width: ((swap ? baseHeightPts : baseWidthPts) * OCR_DPI) / 72,
+    height: ((swap ? baseWidthPts : baseHeightPts) * OCR_DPI) / 72
+  };
+}
+
+function regionOverflowPenalty(region, size) {
+  return (
+    Math.max(0, -region.left) +
+    Math.max(0, -region.top) +
+    Math.max(0, region.right - size.width) +
+    Math.max(0, region.bottom - size.height)
+  );
+}
+
+function rotationDistance(left, right) {
+  const distance = Math.abs(normalizeRotation(left - right));
+  return Math.min(distance, 360 - distance);
+}
+
+function inferOcrRotation(regions, baseWidthPts, baseHeightPts, preferredRotation) {
+  const boxes = regions.flatMap(regionBoxes);
+  if (!boxes.length) return preferredRotation;
+
+  return RIGHT_ANGLE_ROTATIONS.map((candidate) => {
+    const size = sourceSizeForRotation(baseWidthPts, baseHeightPts, candidate);
+    return {
+      rotation: candidate,
+      penalty: boxes.reduce((total, box) => total + regionOverflowPenalty(box, size), 0),
+      distance: rotationDistance(candidate, preferredRotation)
+    };
+  }).sort((left, right) => left.penalty - right.penalty || left.distance - right.distance || left.rotation - right.rotation)[0].rotation;
+}
+
+function rotateOcrPoint(x, y, width, height, rotation) {
+  switch (normalizeRotation(rotation)) {
+    case 90:
+      return [height - y, x];
+    case 180:
+      return [width - x, height - y];
+    case 270:
+      return [y, width - x];
+    default:
+      return [x, y];
+  }
+}
+
+function viewportRegion(region, layout) {
+  const delta = normalizeRotation(layout.displayRotation - layout.ocrRotation);
+  const points = [
+    [region.left, region.top],
+    [region.right, region.top],
+    [region.right, region.bottom],
+    [region.left, region.bottom]
+  ].map(([x, y]) => rotateOcrPoint(x, y, layout.ocrWidth, layout.ocrHeight, delta));
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  return {
+    left: Math.min(...xs),
+    top: Math.min(...ys),
+    right: Math.max(...xs),
+    bottom: Math.max(...ys)
+  };
+}
+
+function boxStyle(region, layout, color) {
+  if (!region || !layout.sourceWidth || !layout.sourceHeight) return { display: "none" };
+  const box = viewportRegion(region, layout);
+  const scaleX = layout.width / layout.sourceWidth;
+  const scaleY = layout.height / layout.sourceHeight;
+  return {
+    left: box.left * scaleX,
+    top: box.top * scaleY,
+    width: (box.right - box.left) * scaleX,
+    height: (box.bottom - box.top) * scaleY,
+    "--box": color
+  };
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[|]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+const GENERIC_PAGE_QUERIES = new Set([
+  "invoice",
+  "credit memo",
+  "page",
+  "total",
+  "grand total",
+  "amount",
+  "parts receiving",
+  "bottom",
+  "top",
+  "yes",
+  "no"
+]);
+
+function queryTokens(value) {
+  return normalizeSearchText(value)
+    .split(" ")
+    .filter((token) => token.length > 1);
+}
+
+function queryIsUseful(value) {
+  const normalized = normalizeSearchText(value);
+  if (!normalized || GENERIC_PAGE_QUERIES.has(normalized)) return false;
+
+  const digits = normalizeDigits(value);
+  if (digits.length >= 4) return true;
+  if (digits.length > 0) return false;
+
+  const tokens = queryTokens(value);
+  return tokens.length >= 2 && normalized.length >= 8;
+}
+
+function uniqueCandidates(values) {
+  return [
+    ...new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(queryIsUseful)
+    )
+  ];
+}
+
+function valuesForBox(region, role, box) {
+  if (role === "truth") return [box?.trueValue, region?.trueValue];
+  if (role === "capture") return [box?.value, region?.value];
+  return [box?.value, box?.trueValue, region?.value, region?.trueValue];
+}
+
+function queriesForBox(region, role, box) {
+  return uniqueCandidates(valuesForBox(region, role, box));
+}
+
+function normalizedValueKeys(values) {
+  return values.flatMap((value) => {
+    if (!queryIsUseful(value)) return [];
+    const text = normalizeSearchText(value);
+    const digits = normalizeDigits(value);
+    return [text, digits.length >= 4 ? digits : null].filter(Boolean);
+  });
+}
+
+function shareUsefulValue(leftValues, rightValues) {
+  const left = new Set(normalizedValueKeys(leftValues));
+  return normalizedValueKeys(rightValues).some((value) => left.has(value));
+}
+
+function scoreQueryOnPage(query, pageText) {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedPage = normalizeSearchText(pageText);
+  if (!normalizedQuery || !normalizedPage) return 0;
+  if (normalizedPage.includes(normalizedQuery)) return 5;
+
+  const queryDigits = normalizeDigits(query);
+  const pageDigits = normalizeDigits(pageText);
+  if (queryDigits.length >= 5 && pageDigits.includes(queryDigits)) return 4;
+
+  const tokens = queryTokens(query);
+  if (tokens.length >= 2 && tokens.every((token) => normalizedPage.includes(token))) return 3;
+  return 0;
+}
+
+function pageIndexesForBoxAnchor(region, targetEntry, entries, numPages, fallbackBase) {
+  const targetValues = valuesForBox(region, targetEntry.role, targetEntry.box);
+  const pages = entries
+    .filter((entry) => entry !== targetEntry && !hasUnknownPage(entry.box))
+    .filter((entry) => shareUsefulValue(targetValues, valuesForBox(region, entry.role, entry.box)))
+    .map((entry) => pageIndexOf(entry.box, numPages, fallbackBase))
+    .filter((pageIndex) => pageIndex !== null);
+  return [...new Set(pages)];
+}
+
+async function extractPageText(page) {
+  try {
+    const content = await page.getTextContent();
+    return content.items?.map((item) => item.str || "").join(" ") || "";
+  } catch {
+    return "";
+  }
+}
+
+function hintsFromPageTexts(targets, pageTexts, source) {
+  return Object.fromEntries(
+    targets
+      .map((target) => {
+        const scoredPages = pageTexts
+          .map((pageText) => ({
+            pageIndex: pageText.pageIndex,
+            score: Math.max(...target.queries.map((query) => scoreQueryOnPage(query, pageText.text)))
+          }))
+          .filter((pageText) => pageText.score > 0);
+        if (!scoredPages.length) return null;
+
+        const bestScore = Math.max(...scoredPages.map((pageText) => pageText.score));
+        const pages = scoredPages.filter((pageText) => pageText.score === bestScore).map((pageText) => pageText.pageIndex);
+        return pages.length ? [target.key, { pages, source, score: bestScore }] : null;
+      })
+      .filter(Boolean)
+  );
+}
+
+async function renderPageForOcr(page, rotation) {
+  const viewport = page.getViewport({ scale: OCR_RENDER_SCALE, rotation });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+  return canvas;
+}
 
 export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusField = null, onClose }) {
   const [docIndex, setDocIndex] = useState(Math.min(initialDocIndex, Math.max(0, docs.length - 1)));
   const [pageNum, setPageNum] = useState(1);
   const [numPages, setNumPages] = useState(1);
   const [errorsOnly, setErrorsOnly] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [validationTick, setValidationTick] = useState(0);
+  const [revalidating, setRevalidating] = useState(false);
+  const [pageHints, setPageHints] = useState({});
+  const [findingPages, setFindingPages] = useState(false);
+  const [findStatus, setFindStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [layout, setLayout] = useState({ width: 0, height: 0, overlayScale: 1 });
+  const [layout, setLayout] = useState({
+    ready: false,
+    width: 0,
+    height: 0,
+    sourceWidth: 0,
+    sourceHeight: 0,
+    ocrWidth: 0,
+    ocrHeight: 0,
+    displayRotation: 0,
+    ocrRotation: 0
+  });
   const [active, setActive] = useState(focusField);
 
   const canvasRef = useRef(null);
@@ -40,7 +446,15 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
   const renderTaskRef = useRef(null);
 
   const current = docs[docIndex];
-  const regions = current?.regions || [];
+  const regions = useMemo(() => current?.regions || [], [current]);
+  // When the document's page metadata can't be trusted (see pageMetadataReliable), drop it up front so
+  // every box falls back to "shown on every page" and can be relocated by Find pages.
+  const pagesReliable = useMemo(() => pageMetadataReliable(regions, numPages), [regions, numPages]);
+  const trustedRegions = useMemo(
+    () => (pagesReliable ? regions : regions.map(stripPageMetadata)),
+    [regions, pagesReliable]
+  );
+  const effectiveRegions = useMemo(() => applyPageHints(trustedRegions, pageHints), [trustedRegions, pageHints]);
 
   // Esc to close.
   useEffect(() => {
@@ -56,21 +470,26 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
     let cancelled = false;
     setLoading(true);
     setError("");
+    setRevalidating(false);
+    setPageHints({});
+    setFindingPages(false);
+    setFindStatus("");
+    setLayout((currentLayout) => ({ ...currentLayout, ready: false }));
     pdfRef.current = null;
+    setRotation(0);
 
     (async () => {
       try {
+        if (!current?.doc) throw new Error("No document selected.");
         const buffer = await current.doc.getArrayBuffer();
         if (cancelled) return;
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const pdf = await pdfjsLib.getDocument({ data: buffer, wasmUrl: PDFJS_WASM_URL }).promise;
         if (cancelled) return;
         pdfRef.current = pdf;
         setNumPages(pdf.numPages);
         const focusRegion = focusField && regions.find((r) => r.name === focusField);
-        // Match the per-document page-base detection used for the overlay (0- vs 1-based).
-        const pages = regions.map((r) => r.page ?? 0);
-        const base = pages.length && Math.min(...pages) >= 1 && Math.max(...pages) <= pdf.numPages ? 1 : 0;
-        const focusPage = focusRegion ? Math.min(Math.max(0, (focusRegion.page ?? 0) - base), pdf.numPages - 1) + 1 : 1;
+        const base = inferPageBase(regions, pdf.numPages);
+        const focusPage = focusRegion ? focusPageOf(primaryRegion(focusRegion), pdf.numPages, base) : 1;
         setPageNum(focusPage);
         setActive(focusField);
       } catch (err) {
@@ -92,23 +511,38 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
     if (!pdf || loading) return undefined;
     let cancelled = false;
     let task = null;
+    setRevalidating(true);
+    setLayout((currentLayout) => ({ ...currentLayout, ready: false }));
 
     (async () => {
       try {
         const page = await pdf.getPage(pageNum);
         if (cancelled) return;
-        const unit = page.getViewport({ scale: 1 });
+        const baseViewport = page.getViewport({ scale: 1, rotation: 0 });
+        const displayRotation = normalizeRotation((page.rotate || 0) + rotation);
+        const ocrRotation = inferOcrRotation(regions, baseViewport.width, baseViewport.height, displayRotation);
+        const displaySource = sourceSizeForRotation(baseViewport.width, baseViewport.height, displayRotation);
+        const ocrSource = sourceSizeForRotation(baseViewport.width, baseViewport.height, ocrRotation);
+        const unit = page.getViewport({ scale: 1, rotation: displayRotation });
         const targetWidth = Math.min(880, Math.max(520, window.innerWidth - 360));
         const scale = targetWidth / unit.width;
-        const viewport = page.getViewport({ scale });
+        const viewport = page.getViewport({ scale, rotation: displayRotation });
         const canvas = canvasRef.current;
         if (!canvas) return;
         canvas.width = Math.round(viewport.width);
         canvas.height = Math.round(viewport.height);
-        // The overlay geometry is fully known here — commit it before the async raster render so
-        // the field boxes are positioned even while the page is still painting (and regardless of
-        // a StrictMode double-invoke cancelling the render task).
-        setLayout({ width: canvas.width, height: canvas.height, overlayScale: (scale * 72) / OCR_DPI });
+        const nextLayout = {
+          ready: true,
+          width: canvas.width,
+          height: canvas.height,
+          sourceWidth: displaySource.width,
+          sourceHeight: displaySource.height,
+          ocrWidth: ocrSource.width,
+          ocrHeight: ocrSource.height,
+          displayRotation,
+          ocrRotation
+        };
+        setLayout(nextLayout);
         task = page.render({ canvasContext: canvas.getContext("2d"), viewport });
         renderTaskRef.current = task;
         await task.promise;
@@ -116,6 +550,8 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
         if (!cancelled && err?.name !== "RenderingCancelledException") {
           setError(err?.message || "Failed to render page.");
         }
+      } finally {
+        if (!cancelled) setRevalidating(false);
       }
     })();
 
@@ -127,28 +563,131 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
         /* render already settled */
       }
     };
-  }, [pageNum, loading, docIndex]);
+  }, [pageNum, loading, docIndex, rotation, validationTick, regions]);
 
-  // A field's page can be recorded 0-based (matching the export's PageIndex) or 1-based,
-  // depending on the report. Auto-detect per document so regions land on the right page of a
-  // multi-page PDF either way: if every page value is >= 1 and within the page count, it's 1-based.
-  const pageBase = useMemo(() => {
-    const pages = regions.map((r) => r.page ?? 0);
-    if (!pages.length) return 0;
-    return Math.min(...pages) >= 1 && Math.max(...pages) <= numPages ? 1 : 0;
-  }, [regions, numPages]);
-  // 0-based page index for a region, clamped into range so a stray value still shows somewhere.
-  const pageOf = (r) => Math.min(Math.max(0, (r.page ?? 0) - pageBase), Math.max(0, numPages - 1));
+  const pageBase = useMemo(() => inferPageBase(effectiveRegions, numPages), [effectiveRegions, numPages]);
 
-  // Regions for the current page (pdf pages are 1-based; pageOf is normalized 0-based).
+  // Regions for the current page. Known-page boxes stay page-specific; unknown-page boxes are
+  // repeated with a visible warning so the user can manually find the matching page.
   const pageRegions = useMemo(
     () =>
-      regions.filter((r) => pageOf(r) + 1 === pageNum && (!errorsOnly || r.kind === "error")),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [regions, pageNum, errorsOnly, pageBase, numPages]
+      effectiveRegions.filter(
+        (r) =>
+          (regionList(r.captureRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase)) ||
+            regionList(r.trueRegion).some((region) => isRegionOnPage(region, pageNum, numPages, pageBase)) ||
+            (hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase))) &&
+          (!errorsOnly || r.kind === "error")
+      ),
+    [effectiveRegions, pageNum, errorsOnly, pageBase, numPages]
   );
 
   const errorCount = useMemo(() => regions.filter((r) => r.kind === "error").length, [regions]);
+  const unknownPageCount = useMemo(
+    () => effectiveRegions.reduce((count, region) => count + regionBoxes(region).filter(hasUnknownPage).length, 0),
+    [effectiveRegions]
+  );
+  const pageHintTargets = useMemo(
+    () =>
+      trustedRegions.flatMap((region, index) => {
+        const entries = regionBoxEntries(region);
+        return entries
+          .filter((entry) => hasUnknownPage(entry.box))
+          .map((entry) => {
+            const key = boxHintKey(region, index, entry.role, entry.boxIndex);
+            const queries = queriesForBox(region, entry.role, entry.box);
+            const anchorPages = pageIndexesForBoxAnchor(region, entry, entries, numPages, pageBase);
+            return { key, queries, anchorPages };
+          })
+          .filter((target) => !pageHints[target.key] && (target.queries.length > 0 || target.anchorPages.length === 1));
+      }),
+    [trustedRegions, pageHints, numPages, pageBase]
+  );
+
+  const findPagesByText = async () => {
+    const pdf = pdfRef.current;
+    if (!pdf || findingPages || !pageHintTargets.length) {
+      if (!pageHintTargets.length) {
+        setFindStatus(
+          unknownPageCount === 0
+            ? "All locatable regions already have page metadata."
+            : "No page-unknown regions have useful values to resolve."
+        );
+      }
+      return;
+    }
+
+    setFindingPages(true);
+    setFindStatus("Checking known metadata anchors...");
+
+    try {
+      let hints = Object.fromEntries(
+        pageHintTargets
+          .filter((target) => target.anchorPages.length === 1)
+          .map((target) => [target.key, { pages: target.anchorPages, source: "metadata", score: 6 }])
+      );
+      const textTargets = pageHintTargets.filter((target) => !hints[target.key] && target.queries.length > 0);
+
+      if (textTargets.length) setFindStatus("Checking PDF text layer...");
+      const pageTexts = [];
+      for (let pageIndex = 0; pageIndex < pdf.numPages && textTargets.length; pageIndex += 1) {
+        const page = await pdf.getPage(pageIndex + 1);
+        pageTexts.push({ pageIndex, text: await extractPageText(page) });
+      }
+
+      hints = { ...hints, ...hintsFromPageTexts(textTargets, pageTexts, "text") };
+      const unresolved = textTargets.filter((target) => !hints[target.key]);
+
+      if (unresolved.length) {
+        setFindStatus("Loading OCR engine...");
+        const { createWorker } = await import("tesseract.js");
+        const worker = await createWorker("eng", 1, {
+          workerPath: `${OCR_ASSET_URL}worker.min.js`,
+          corePath: `${OCR_ASSET_URL}core`,
+          langPath: `${OCR_ASSET_URL}lang`,
+          logger: (message) => {
+            if (message?.status) {
+              const progress = Number.isFinite(message.progress) ? ` ${Math.round(message.progress * 100)}%` : "";
+              setFindStatus(`OCR ${message.status}${progress}`);
+            }
+          }
+        });
+
+        try {
+          const ocrTexts = [];
+          for (let pageIndex = 0; pageIndex < pdf.numPages; pageIndex += 1) {
+            setFindStatus(`OCR page ${pageIndex + 1} / ${pdf.numPages}...`);
+            const page = await pdf.getPage(pageIndex + 1);
+            const displayRotation = normalizeRotation((page.rotate || 0) + rotation);
+            const canvas = await renderPageForOcr(page, displayRotation);
+            const result = await worker.recognize(canvas, { preserve_interword_spaces: "1" });
+            ocrTexts.push({ pageIndex, text: result?.data?.text || "" });
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+          hints = { ...hints, ...hintsFromPageTexts(unresolved, ocrTexts, "ocr") };
+        } finally {
+          await worker.terminate();
+        }
+      }
+
+      const found = Object.keys(hints).length;
+      if (!found) {
+        setFindStatus("No text/OCR page matches found; page-unknown boxes stay repeated.");
+        return;
+      }
+
+      setPageHints((currentHints) => ({ ...currentHints, ...hints }));
+      const firstPage = Math.min(...Object.values(hints).flatMap((hint) => hint.pages)) + 1;
+      if (Number.isFinite(firstPage)) setPageNum(firstPage);
+      setValidationTick((value) => value + 1);
+      const sources = [...new Set(Object.values(hints).map((hint) => hint.source))].join("/");
+      setFindStatus(`Applied ${found} page hint${found === 1 ? "" : "s"} from ${sources}.`);
+    } catch (err) {
+      setFindStatus(`Page finding failed: ${err?.message || err}`);
+    } finally {
+      setFindingPages(false);
+    }
+  };
 
   return (
     <div className="docviewer-backdrop" onClick={onClose}>
@@ -159,9 +698,64 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <span>
               {regions.length} field{regions.length === 1 ? "" : "s"}
               {errorCount > 0 && <em className="dv-err-badge">{errorCount} region error{errorCount === 1 ? "" : "s"}</em>}
+              {numPages > 1 && !pagesReliable && (
+                <em className="dv-warn-badge">page data unreliable — shown on every page</em>
+              )}
+              {numPages > 1 && pagesReliable && unknownPageCount > 0 && (
+                <em className="dv-warn-badge">{unknownPageCount} page-unknown box{unknownPageCount === 1 ? "" : "es"}</em>
+              )}
+              {revalidating && <em className="dv-wait-badge">Revalidating regions</em>}
+              {findingPages && <em className="dv-wait-badge">Finding pages</em>}
             </span>
           </div>
           <div className="docviewer-actions">
+            <div className="dv-rotate-tools" aria-label="Rotate page">
+              <button
+                type="button"
+                className="dv-icon-button"
+                onClick={() => setRotation((value) => normalizeRotation(value - 90))}
+                title="Rotate left"
+                aria-label="Rotate left"
+              >
+                <RotateCcw size={16} />
+              </button>
+              <span>{rotation}°</span>
+              <button
+                type="button"
+                className="dv-icon-button"
+                onClick={() => setRotation((value) => normalizeRotation(value + 90))}
+                title="Rotate right"
+                aria-label="Rotate right"
+              >
+                <RotateCw size={16} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="dv-revalidate-button"
+              onClick={() => {
+                // Real reset: drop any inferred page hints and re-derive placement from the data, then
+                // re-render. Combined with the trust check this restores the every-page fallback.
+                setPageHints({});
+                setFindStatus("");
+                setValidationTick((value) => value + 1);
+              }}
+              disabled={loading || revalidating}
+              title="Revalidate regions"
+            >
+              <RefreshCw size={14} className={revalidating ? "spin" : ""} />
+              Revalidate regions
+            </button>
+            <button
+              type="button"
+              className="dv-revalidate-button"
+              onClick={findPagesByText}
+              disabled={loading || findingPages || pageHintTargets.length === 0}
+              title="Find matching pages with PDF text/OCR"
+            >
+              <Search size={14} className={findingPages ? "spin" : ""} />
+              Find pages
+            </button>
             {errorCount > 0 && (
               <label className="dv-toggle">
                 <input type="checkbox" checked={errorsOnly} onChange={(e) => setErrorsOnly(e.target.checked)} />
@@ -198,26 +792,86 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <div className="dv-canvas-wrap" style={{ width: layout.width || undefined }}>
               <canvas ref={canvasRef} className="dv-canvas" />
               <div className="dv-overlay" style={{ width: layout.width, height: layout.height }}>
-                {pageRegions.map((r, i) => {
-                  const s = layout.overlayScale;
+                {numPages > 1 && unknownPageCount > 0 && (
+                  <div className="dv-page-warning">
+                    {pagesReliable ? (
+                      <>
+                        {unknownPageCount} region box{unknownPageCount === 1 ? "" : "es"} do not have page metadata and are shown on
+                        every page.
+                      </>
+                    ) : (
+                      <>
+                        Page data for this document is inconsistent (every field reports the same page), so all {unknownPageCount} region
+                        box{unknownPageCount === 1 ? "" : "es"} are shown on every page. Use “Find pages” to locate them by content.
+                      </>
+                    )}
+                  </div>
+                )}
+                {revalidating && (
+                  <div className="dv-revalidate-status">
+                    <LoaderCircle className="spin" size={16} /> Revalidating regions...
+                  </div>
+                )}
+                {(findingPages || findStatus) && (
+                  <div className="dv-ocr-status">
+                    {findingPages && <LoaderCircle className="spin" size={16} />}
+                    {findStatus || "Finding pages..."}
+                  </div>
+                )}
+                {layout.ready && pageRegions.map((r, i) => {
                   const isActive = active && r.name === active;
+                  const captureRegions = regionList(r.captureRegion).filter((region) =>
+                    isRegionOnPage(region, pageNum, numPages, pageBase)
+                  );
+                  const truthRegions = regionList(r.trueRegion).filter((region) =>
+                    isRegionOnPage(region, pageNum, numPages, pageBase)
+                  );
+                  const directRegions = hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase) ? [r] : [];
                   return (
-                    <button
-                      type="button"
-                      key={`${r.name}-${i}`}
-                      className={`dv-box${isActive ? " active" : ""}`}
-                      style={{
-                        left: r.left * s,
-                        top: r.top * s,
-                        width: (r.right - r.left) * s,
-                        height: (r.bottom - r.top) * s,
-                        "--box": KIND_COLOR[r.kind] || KIND_COLOR.neutral
-                      }}
-                      onClick={() => setActive(r.name)}
-                      title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind}`}
-                    >
-                      <span className="dv-box-tag">{r.name}</span>
-                    </button>
+                    <Fragment key={`${r.name}-${i}`}>
+                      {truthRegions.map((truthRegion, truthIndex) => (
+                        <button
+                          key={`truth-${truthIndex}`}
+                          type="button"
+                          className={`dv-box truth${isActive ? " active" : ""}`}
+                          style={boxStyle(truthRegion, layout, KIND_COLOR.truth)}
+                          onClick={() => setActive(r.name)}
+                          title={`Truth ${r.name}: ${r.trueValue ?? truthRegion.value ?? ""}${
+                            hasUnknownPage(truthRegion) ? " - page unknown" : ""
+                          }`}
+                        >
+                          <span className="dv-box-tag">TRUE {r.name}</span>
+                        </button>
+                      ))}
+                      {captureRegions.map((captureRegion, captureIndex) => (
+                        <button
+                          key={`capture-${captureIndex}`}
+                          type="button"
+                          className={`dv-box${isActive ? " active" : ""}`}
+                          style={boxStyle(captureRegion, layout, KIND_COLOR[r.kind] || KIND_COLOR.neutral)}
+                          onClick={() => setActive(r.name)}
+                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind}${
+                            hasUnknownPage(captureRegion) ? " - page unknown" : ""
+                          }`}
+                        >
+                          <span className="dv-box-tag">{r.name}</span>
+                        </button>
+                      ))}
+                      {directRegions.map((directRegion, directIndex) => (
+                        <button
+                          key={`direct-${directIndex}`}
+                          type="button"
+                          className={`dv-box${isActive ? " active" : ""}`}
+                          style={boxStyle(directRegion, layout, KIND_COLOR[r.kind] || KIND_COLOR.neutral)}
+                          onClick={() => setActive(r.name)}
+                          title={`${r.name}: ${r.value ?? ""} — ${r.status || r.kind}${
+                            hasUnknownPage(directRegion) ? " - page unknown" : ""
+                          }`}
+                        >
+                          <span className="dv-box-tag">{r.name}</span>
+                        </button>
+                      ))}
+                    </Fragment>
                   );
                 })}
               </div>
@@ -230,6 +884,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <span><i style={{ background: KIND_COLOR.error }} /> error</span>
             <span><i style={{ background: KIND_COLOR.warning }} /> warning</span>
             <span><i style={{ background: KIND_COLOR.success }} /> correct</span>
+            <span><i style={{ background: "transparent", border: `2px dashed ${KIND_COLOR.truth}` }} /> truth</span>
           </div>
           {numPages > 1 && (
             <div className="dv-pager">
