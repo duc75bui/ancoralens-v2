@@ -185,6 +185,35 @@ const DOCUMENTS = [
       { title: "PAGE 4 OF 5", lines: ["This page intentionally left blank."] },
       { title: "PAGE 5 OF 5", lines: ["This page intentionally left blank."] }
     ]
+  },
+  // Two-page document, NO page references, with a field that cannot be resolved by content (value "N/A"
+  // has no usable query). After Find pages it stays page-unknown and sprays onto both content pages; on
+  // page 1 it sits over its real "Misc: N/A" text, but on page 2 it lands on blank space. Exercises the
+  // blank-area culling: the page-2 copy must be dropped because nothing is drawn under it.
+  {
+    batchId: "b0000006-0000-0000-0000-000000000006",
+    docId: "d0000006-0000-0000-0000-000000000006",
+    file: "STATEMENT_SAMPLE_6001_blankpage.pdf",
+    batchName: "Batch-SAMPLE-6001",
+    unreferencedPages: true,
+    pages: [
+      {
+        title: "STATEMENT 6001 - PAGE 1 OF 2",
+        lines: [
+          { text: "Reference: ZQX-99182", field: "FT_REFERENCE", prefix: "Reference: ", value: "ZQX-99182", status: "Correct" },
+          { text: "" },
+          { text: "" },
+          { text: "" },
+          { text: "Misc: N/A", field: "FT_MISC_FLAG", prefix: "Misc: ", value: "N/A", status: "UnassignedValid" }
+        ]
+      },
+      {
+        title: "STATEMENT 6001 - PAGE 2 OF 2",
+        lines: [
+          { text: "Grand Total: 7421.50", field: "FT_GRAND_TOTAL", prefix: "Grand Total: ", value: "7421.50", status: "Correct" }
+        ]
+      }
+    ]
   }
 ];
 
@@ -226,15 +255,15 @@ fs.writeFileSync(
   path.join(OUT, "TrainingPassSummary.csv"),
   [
     "Label,V1,V2,V3",
-    "Total Batches,5,,",
+    "Total Batches,6,,",
     "Total Exceptional Batches,3,,",
-    "Total Processed Documents,5,,",
-    "Total Processed Pages,10,,",
+    "Total Processed Documents,6,,",
+    "Total Processed Pages,12,,",
     "Field Accuracy (correct/all) %,85.0,,",
     "Field and Position Accuracy %,79.0,,",
     "Labor Savings(Chars) %,78.0,,",
     "Labor Savings(Fields) %,73.5,,",
-    "Training Pass 1,85.0,5,3"
+    "Training Pass 1,85.0,6,3"
   ].join("\n"),
   "utf8"
 );
@@ -297,7 +326,11 @@ fs.writeFileSync(
       "       1-3 (pages 4-5 are blank), and the export carries no CapturedPage/PageIndex. On open,",
       "       boxes are shown on every page; click 'Find pages' to resolve them by content. Each",
       "       line item should snap to its real page (1, 2 or 3), pages 4-5 stay empty, and",
-      "       FT_LINE_04_AMOUNT on page 2 is a red error."
+      "       FT_LINE_04_AMOUNT on page 2 is a red error.",
+      "     - Batch-SAMPLE-6001: 2 pages, NO PAGE REFERENCES. FT_MISC_FLAG ('N/A') cannot be matched",
+      "       by content, so it stays page-unknown. After 'Find pages' it would spray onto both pages,",
+      "       but on page 2 it lands on blank space -- blank-area culling drops that copy. Page 1 keeps",
+      "       it (over the 'Misc: N/A' text); page 2 shows only the Grand Total."
     ].join("\n")
   );
 

@@ -1,10 +1,10 @@
 Label,V1,V2,V3
-Total Batches,5,,
+Total Batches,6,,
 Total Exceptional Batches,3,,
-Total Processed Documents,5,,
-Total Processed Pages,10,,
+Total Processed Documents,6,,
+Total Processed Pages,12,,
 Field Accuracy (correct/all) %,85.0,,
 Field and Position Accuracy %,79.0,,
 Labor Savings(Chars) %,78.0,,
 Labor Savings(Fields) %,73.5,,
-Training Pass 1,85.0,5,3
+Training Pass 1,85.0,6,3

@@ -276,6 +276,58 @@ function boxStyle(region, layout, color) {
   };
 }
 
+// Stable identity for a drawn box, by role + rounded source coordinates (independent of array index).
+function boxGeomKey(role, box) {
+  return `${role}:${Math.round(box.left)}:${Math.round(box.top)}:${Math.round(box.right)}:${Math.round(box.bottom)}`;
+}
+
+// True when the rendered page has essentially no ink under the given canvas-pixel rect (i.e. the box
+// would sit over blank document space). Used to drop fallback boxes that spilled onto a page where
+// their value has no content. Reads the already-painted page canvas (same-origin, so not tainted).
+function isBlankCanvasRegion(ctx, x, y, width, height) {
+  if (width <= 0 || height <= 0) return false;
+  let data;
+  try {
+    data = ctx.getImageData(x, y, width, height).data;
+  } catch {
+    return false; // can't sample -> never cull
+  }
+  const inkBudget = Math.max(6, Math.floor(width * height * 0.005)); // < 0.5% inked => blank
+  let ink = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3];
+    if (alpha > 10 && (data[i] < 225 || data[i + 1] < 225 || data[i + 2] < 225)) {
+      ink += 1;
+      if (ink > inkBudget) return false;
+    }
+  }
+  return true;
+}
+
+// Keys of fallback (page-unknown) boxes that, on the current page, fall on blank document space. Only
+// fallback boxes are considered — confidently page-resolved boxes are always kept.
+function blankFallbackBoxKeys(ctx, regions, layout, pageNum, numPages, fallbackBase, contentPages) {
+  const hidden = new Set();
+  if (!ctx || !contentPages || contentPages.size === 0) return hidden;
+  const consider = (role, box) => {
+    if (!box || !hasUnknownPage(box)) return;
+    if (!isRegionOnPage(box, pageNum, numPages, fallbackBase, contentPages)) return;
+    const style = boxStyle(box, layout, "#000");
+    if (style.display === "none") return;
+    const x = Math.max(0, Math.floor(style.left));
+    const y = Math.max(0, Math.floor(style.top));
+    const width = Math.min(layout.width - x, Math.ceil(style.width));
+    const height = Math.min(layout.height - y, Math.ceil(style.height));
+    if (isBlankCanvasRegion(ctx, x, y, width, height)) hidden.add(boxGeomKey(role, box));
+  };
+  regions.forEach((region) => {
+    regionList(region.captureRegion).forEach((box) => consider("capture", box));
+    regionList(region.trueRegion).forEach((box) => consider("truth", box));
+    if (hasBox(region)) consider("region", region);
+  });
+  return hidden;
+}
+
 function normalizeSearchText(value) {
   return String(value || "")
     .toLowerCase()
@@ -452,6 +504,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
   const [pageHints, setPageHints] = useState({});
   const [findingPages, setFindingPages] = useState(false);
   const [findStatus, setFindStatus] = useState("");
+  const [blankBoxKeys, setBlankBoxKeys] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [layout, setLayout] = useState({
@@ -538,6 +591,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
     let cancelled = false;
     let task = null;
     setRevalidating(true);
+    setBlankBoxKeys(new Set());
     setLayout((currentLayout) => ({ ...currentLayout, ready: false }));
 
     (async () => {
@@ -569,9 +623,17 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
           ocrRotation
         };
         setLayout(nextLayout);
-        task = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+        const context = canvas.getContext("2d");
+        task = page.render({ canvasContext: context, viewport });
         renderTaskRef.current = task;
         await task.promise;
+        if (cancelled) return;
+        // With the page now painted, drop fallback boxes that landed on blank document space.
+        if (numPages > 1) {
+          setBlankBoxKeys(
+            blankFallbackBoxKeys(context, effectiveRegions, nextLayout, pageNum, numPages, pageBase, contentPages)
+          );
+        }
       } catch (err) {
         if (!cancelled && err?.name !== "RenderingCancelledException") {
           setError(err?.message || "Failed to render page.");
@@ -873,13 +935,22 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
                 )}
                 {layout.ready && pageRegions.map((r, i) => {
                   const isActive = active && r.name === active;
-                  const captureRegions = regionList(r.captureRegion).filter((region) =>
-                    isRegionOnPage(region, pageNum, numPages, pageBase, contentPages)
+                  const captureRegions = regionList(r.captureRegion).filter(
+                    (region) =>
+                      isRegionOnPage(region, pageNum, numPages, pageBase, contentPages) &&
+                      !blankBoxKeys.has(boxGeomKey("capture", region))
                   );
-                  const truthRegions = regionList(r.trueRegion).filter((region) =>
-                    isRegionOnPage(region, pageNum, numPages, pageBase, contentPages)
+                  const truthRegions = regionList(r.trueRegion).filter(
+                    (region) =>
+                      isRegionOnPage(region, pageNum, numPages, pageBase, contentPages) &&
+                      !blankBoxKeys.has(boxGeomKey("truth", region))
                   );
-                  const directRegions = hasBox(r) && isRegionOnPage(r, pageNum, numPages, pageBase, contentPages) ? [r] : [];
+                  const directRegions =
+                    hasBox(r) &&
+                    isRegionOnPage(r, pageNum, numPages, pageBase, contentPages) &&
+                    !blankBoxKeys.has(boxGeomKey("region", r))
+                      ? [r]
+                      : [];
                   // Datasets that only export truth locations (no captured-location box) would otherwise
                   // draw every field — including errors — as a plain blue truth box. Color the truth box
                   // by status for error/warning fields so problems are visible even without a capture box.

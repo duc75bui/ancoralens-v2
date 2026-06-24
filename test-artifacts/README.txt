@@ -23,3 +23,7 @@ How to test the document viewer:
        boxes are shown on every page; click 'Find pages' to resolve them by content. Each
        line item should snap to its real page (1, 2 or 3), pages 4-5 stay empty, and
        FT_LINE_04_AMOUNT on page 2 is a red error.
+     - Batch-SAMPLE-6001: 2 pages, NO PAGE REFERENCES. FT_MISC_FLAG ('N/A') cannot be matched
+       by content, so it stays page-unknown. After 'Find pages' it would spray onto both pages,
+       but on page 2 it lands on blank space -- blank-area culling drops that copy. Page 1 keeps
+       it (over the 'Misc: N/A' text); page 2 shows only the Grand Total.
