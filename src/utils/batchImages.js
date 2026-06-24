@@ -45,6 +45,9 @@ function makeRegion({ page = null, pageBase = null, left, top, right, bottom, so
     bottom: Math.max(top, bottom),
     source
   };
+  // Zero-area / empty boxes (e.g. X:0 Y:0 Width:0 Height:0) carry no location — they come from values
+  // computed by a formula or left at a default, not found on the page. Drop them so nothing is drawn at
+  // the page origin; the field simply has no region to overlay.
   if (normalized.right <= normalized.left || normalized.bottom <= normalized.top) return null;
   return normalized;
 }
