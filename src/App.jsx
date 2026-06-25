@@ -29,6 +29,66 @@ function loadViewMemory() {
   }
 }
 
+// Floating, non-blocking banner for the background document-archive ingest. Lives at App level so it
+// persists while the user works in the dashboard/details views during a long (multi-GB) index.
+function ImageLoadBanner({ status, onDismiss }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startedAt = status?.startedAt || null;
+
+  useEffect(() => {
+    if (!startedAt || status?.done || status?.error) return undefined;
+    const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    tick();
+    const handle = window.setInterval(tick, 1000);
+    return () => window.clearInterval(handle);
+  }, [startedAt, status?.done, status?.error]);
+
+  // Once indexing succeeds, auto-dismiss the banner after a few seconds so it doesn't linger.
+  useEffect(() => {
+    if (!status?.done || status?.error) return undefined;
+    const handle = window.setTimeout(() => onDismiss?.(), 6000);
+    return () => window.clearTimeout(handle);
+  }, [status?.done, status?.error, onDismiss]);
+
+  if (!status) return null;
+
+  const { message, loaded, total, error, done, phase } = status;
+  const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : null;
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const elapsedLabel = mins ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <div className={`image-load-banner ${error ? "is-error" : done ? "is-done" : ""}`} role="status" aria-live="polite">
+      <div className="ilb-row">
+        {!done && !error && <span className="dv-spinner" aria-hidden="true" />}
+        <div className="ilb-text">
+          <strong>
+            {error ? "Document archive failed to load" : done ? "Documents ready" : "Indexing document archive…"}
+          </strong>
+          <span>{error || message || "Working…"}</span>
+        </div>
+        <div className="ilb-meta">
+          {!done && !error && <span className="ilb-elapsed">{elapsedLabel}</span>}
+          {(done || error) && (
+            <button type="button" className="ilb-dismiss" onClick={onDismiss} aria-label="Dismiss">
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+      {!done && !error && (
+        <div className="ilb-bar">
+          <div className={`ilb-bar-fill ${pct == null ? "indeterminate" : ""}`} style={pct == null ? undefined : { width: `${pct}%` }} />
+        </div>
+      )}
+      {phase === "directory" && !done && !error && (
+        <div className="ilb-hint">Large batches can take several minutes — you can keep working; this finishes in the background.</div>
+      )}
+    </div>
+  );
+}
+
 function EmptyPanel({ title, message, onUpload }) {
   return (
     <section className="fade-in glass-panel empty-state">
@@ -51,6 +111,9 @@ export default function App() {
   const [trainingPassData, setTrainingPassData] = useState({});
   const [activePass, setActivePass] = useState(null);
   const [imageIndex, setImageIndex] = useState(null);
+  // Document-archive ingest status, lifted here so the progress banner survives navigating away from
+  // the Upload view while a multi-GB archive indexes in the background.
+  const [imageStatus, setImageStatus] = useState(null);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [viewMemory, setViewMemory] = useState(loadViewMemory);
 
@@ -110,7 +173,14 @@ export default function App() {
         setTrainingPassData((current) => ({ ...current, [sessionPatch]: payload }));
         break;
       case "images":
-        setImageIndex(payload);
+        setImageIndex((previous) => {
+          if (previous && previous !== payload) previous.close?.();
+          return payload;
+        });
+        break;
+      case "imagesProgress":
+        // payload = { phase, message, loaded, total, error, done } from the archive indexer.
+        setImageStatus(payload);
         break;
       case "vendor":
         setVendorData(payload);
@@ -132,6 +202,9 @@ export default function App() {
         if (payload.images) setImageIndex(payload.images);
         if (payload.session) setSessionInfo((current) => ({ ...current, ...payload.session }));
         break;
+      case "imagesReset":
+        setImageStatus(null);
+        break;
       default:
         console.warn("Unknown data type loaded:", type);
     }
@@ -144,7 +217,11 @@ export default function App() {
     setTemplateData(null);
     setTrainingPassData({});
     setActivePass(null);
-    setImageIndex(null);
+    setImageIndex((previous) => {
+      previous?.close?.();
+      return null;
+    });
+    setImageStatus(null);
     setSessionInfo(null);
     setViewMemory({});
     sessionStorage.removeItem(VIEW_MEMORY_KEY);
@@ -279,6 +356,8 @@ export default function App() {
 
         {activeView === "docs" && <DocumentationView hasData={hasData} />}
       </main>
+
+      <ImageLoadBanner status={imageStatus} onDismiss={() => setImageStatus(null)} />
     </div>
   );
 }

@@ -9,7 +9,7 @@
 import { AlertTriangle, BarChart3, Check, FileText, FolderOpen, Grid3X3, Images, Layers, LoaderCircle, Upload, Users } from "lucide-react";
 import { useRef, useState } from "react";
 import { parseCsvFile, readFileAsText } from "../utils/csv.js";
-import { parseBatchZip } from "../utils/batchImages.js";
+import { isZipPart, mergeImageIndexes, parseBatchZip, zipBaseName } from "../utils/batchImages.js";
 import { looksLikeTemplateMatching, matchPassKey, parseTemplateMatching } from "../utils/parsers.js";
 
 const MANUAL_FILES = [
@@ -52,10 +52,10 @@ const MANUAL_FILES = [
   {
     type: "images",
     title: "Doc Images",
-    filename: "*.zip (BatchData export)",
+    filename: "*.zip (+ .partN chunks)",
     icon: <Images size={18} color="#0E8F8A" />,
     tint: "rgba(14,143,138,0.14)",
-    accept: ".zip"
+    multiple: true
   }
 ];
 
@@ -66,6 +66,58 @@ const STEPS = [
 ];
 
 const EXPECTED = ["info.txt", "*Summary*.csv", "flatReportData.csv", "*Vendor*.csv", "*Template*.csv", "TrainingPass*.csv"];
+
+/** Group zip files (and their `.partN` chunks) by base name → an array of File[] archive groups. */
+function groupZipFiles(files) {
+  const groups = {};
+  files.filter((file) => isZipPart(file.name)).forEach((file) => {
+    (groups[zipBaseName(file.name)] ||= []).push(file);
+  });
+  return Object.values(groups);
+}
+
+/**
+ * Index one or more BatchData archives in the background, reporting progress (and final success or
+ * failure) up through onDataLoaded("imagesProgress", …) so App's banner can show it across views.
+ * Documents are streamed on demand, so this never holds a whole archive in memory.
+ */
+async function indexArchives(groups, onDataLoaded) {
+  if (!groups.length) return;
+  const startedAt = Date.now();
+  onDataLoaded("imagesProgress", { startedAt, phase: "assemble", message: "Preparing archive…" });
+  try {
+    const indexes = [];
+    for (let i = 0; i < groups.length; i += 1) {
+      const archiveTag = groups.length > 1 ? ` (archive ${i + 1}/${groups.length})` : "";
+      const index = await parseBatchZip(groups[i], {
+        onProgress: (progress) =>
+          onDataLoaded("imagesProgress", {
+            startedAt,
+            ...progress,
+            message: `${progress.message || "Working…"}${archiveTag}`
+          })
+      });
+      if (index.docs.length) indexes.push(index);
+      else await index.close?.(); // a non-document zip (e.g. DocumentReports.zip) — release its reader
+    }
+
+    const merged = mergeImageIndexes(indexes);
+    if (!merged || !merged.docs.length) {
+      onDataLoaded("imagesProgress", { startedAt, error: "No document PDFs found in the archive(s)." });
+      return;
+    }
+    onDataLoaded("images", merged);
+    onDataLoaded("imagesProgress", {
+      startedAt,
+      done: true,
+      loaded: merged.docs.length,
+      total: merged.docs.length,
+      message: `${merged.docs.length.toLocaleString()} document${merged.docs.length === 1 ? "" : "s"} ready.`
+    });
+  } catch (exception) {
+    onDataLoaded("imagesProgress", { startedAt, error: exception?.message || "Failed to read the document archive." });
+  }
+}
 
 export default function UploadView({ onDataLoaded, onComplete }) {
   const [processing, setProcessing] = useState(false);
@@ -88,6 +140,12 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     setProcessing(true);
     setError(null);
     setStatus(null);
+
+    // Detect and start indexing document archives FIRST, before the (potentially slow / fragile) CSV
+    // parsing — so a CSV hiccup can never prevent the zips from being found and indexed. Runs in the
+    // background; App's banner shows progress.
+    const zipGroups = groupZipFiles(files);
+    if (zipGroups.length) indexArchives(zipGroups, onDataLoaded);
 
     try {
       const result = {
@@ -185,24 +243,11 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         }
       }
 
-      // Document images: ANY .zip in the folder (not name-bound — real exports use prefixes like
-      // "BFS_batchData.zip"). parseBatchZip identifies it by its internal Batches/.../InputFiles
-      // structure, so a non-document zip simply yields no docs and is ignored.
-      const zipFile = files.find((file) => file.name.toLowerCase().endsWith(".zip"));
-
+      // Document-image archives were already detected and started indexing at the top of loadFolder
+      // (so a CSV hiccup can't block them). The CSV-driven views load immediately here.
       onDataLoaded("all", result);
       setProcessing(false);
       setStatus("success");
-
-      // Parse the zip in the background (it can be very large) so the CSV-driven views load
-      // immediately; the Detailed Report's "View document" affordance appears once it resolves.
-      if (zipFile) {
-        parseBatchZip(zipFile)
-          .then((index) => {
-            if (index.docs.length) onDataLoaded("images", index);
-          })
-          .catch((exception) => console.warn("Folder load: could not read", zipFile.name, exception?.message));
-      }
 
       if (
         result.dashboard ||
@@ -210,7 +255,7 @@ export default function UploadView({ onDataLoaded, onComplete }) {
         result.vendor ||
         result.template ||
         Object.keys(result.trainingPasses).length ||
-        zipFile
+        zipGroups.length
       ) {
         const nextView = result.dashboard ? "dashboard" : result.template ? "template" : result.vendor ? "vendor" : "details";
         window.setTimeout(() => onComplete(nextView), 1000);
@@ -282,29 +327,27 @@ export default function UploadView({ onDataLoaded, onComplete }) {
     }
   };
 
-  // Document images: a BatchData*.zip of source PDFs. Parsed in-browser into a doc index the
+  // Document images: a zip of source PDFs — either a single `*.zip`, OR a `*.zip` plus its
+  // `*.zip.partN` chunks (the export tool splits large archives). Select them all together;
+  // parseBatchZip reassembles the parts in order before reading. Parsed into a doc index the
   // Detailed Report uses to render pages with field-region overlays.
-  const loadImageZip = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setProcessing(true);
-    setError(null);
-
-    try {
-      const index = await parseBatchZip(file);
-      if (!index.docs.length) throw new Error("No document PDFs found in this zip.");
-      onDataLoaded("images", index);
-      onDataLoaded("session", { source: { kind: "file", name: file.name, loadedAt: Date.now() } });
-      setProcessing(false);
-      setStatus("success");
-      window.setTimeout(() => onComplete("details"), 700);
-    } catch (exception) {
-      setProcessing(false);
-      setError(`Error reading images zip: ${exception.message}`);
-    } finally {
-      event.target.value = "";
+  const loadImageZip = (event) => {
+    const files = Array.from(event.target.files || []).filter((file) => isZipPart(file.name));
+    event.target.value = "";
+    if (!files.length) {
+      setError("Select a .zip (and any .partN chunks) for the document images.");
+      return;
     }
+
+    // Index in the background (archives can be multi-GB) and go straight to the Detailed Report; the
+    // App-level banner shows progress, and "View document" lights up as documents resolve.
+    setError(null);
+    setStatus("success");
+    const groups = groupZipFiles(files);
+    const label = files.length > 1 ? `${zipBaseName(files[0].name)} (${files.length} parts)` : files[0].name;
+    onDataLoaded("session", { source: { kind: "file", name: label, loadedAt: Date.now() } });
+    indexArchives(groups, onDataLoaded);
+    window.setTimeout(() => onComplete("details"), 400);
   };
 
   return (
@@ -400,7 +443,9 @@ export default function UploadView({ onDataLoaded, onComplete }) {
                   <input
                     type="file"
                     ref={fileInputs[item.type]}
-                    accept={item.accept || ".csv"}
+                    /* images: no accept filter — split chunks end in .partN, not .zip, so a
+                       ".zip" filter would hide them in the OS picker. */
+                    accept={item.type === "images" ? undefined : ".csv"}
                     multiple={item.multiple}
                     onChange={(event) => {
                       if (item.type === "images") return loadImageZip(event);

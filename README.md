@@ -16,12 +16,14 @@ Key capabilities:
 - **SQL Connector** (→ MSSQL) and **AI Assistant** (→ Google Gemini).
 
 - **CSV parsing, PDF rendering, and zip reading all run entirely in the browser** (PapaParse,
-  pdf.js, JSZip) — nothing is uploaded; the analytics views need no server.
+  pdf.js, `@zip.js/zip.js`) — nothing is uploaded; the analytics views need no server. The viewer
+  reads **multi‑GB** `BatchData` archives by streaming individual PDFs on demand (never loading the
+  whole archive) and caches the doc index in IndexedDB. See `docs/BATCH_VIEWER.md`.
 - A small **Express server** powers only two optional features (SQL Connector → MSSQL, AI
   Assistant → Google Gemini) and, in production, serves the built UI on the same port.
 
 Built with **React 19 + Vite 7**, custom animated SVG charts + Recharts, framer‑motion,
-`pdfjs-dist` + `jszip` (in‑browser document viewer), and a warm‑paper editorial design
+`pdfjs-dist` + `@zip.js/zip.js` (in‑browser document viewer), and a warm‑paper editorial design
 system (light + dark).
 
 ## Quickstart
@@ -89,7 +91,8 @@ src/
     DocumentViewer.jsx    # modal: pdf.js page render + field-region overlay
   utils/csv.js            # PapaParse wrappers (UTF-16 / sep= tolerant)
   utils/parsers.js        # report parsers + field-status taxonomy + matchPassKey
-  utils/batchImages.js    # read a BatchData*.zip (JSZip) → doc index; parseCaptureLocation
+  utils/batchImages.js    # lazy BatchData*.zip reader (@zip.js/zip.js, per-segment) → doc index; GUID matching; parseCaptureLocation
+  utils/idbCache.js       # IndexedDB cache for the archive doc index (not PDF bytes)
   styles.css              # design-system tokens + all styles
 server/index.js           # Express: serves dist/ + SQL/AI API
 scripts/package.mjs       # deploy packager
@@ -98,9 +101,11 @@ test-artifacts/           # generated test bundle (zip + CSVs) for the document 
 iis/                      # IIS web.config + setup scripts
 ```
 
-> **Dependencies note:** the document viewer adds `pdfjs-dist` (PDF rendering) and `jszip`
-> (in‑browser zip reading). Both are plain `npm install` dependencies — no extra setup. The
-> pdf.js **worker** is bundled by Vite as its own asset (`dist/assets/pdf.worker.*.mjs`); it
-> must ship alongside the rest of `dist/` (it already does via the build/package scripts).
+> **Dependencies note:** the document viewer adds `pdfjs-dist` (PDF rendering) and `@zip.js/zip.js`
+> (lazy, random‑access in‑browser zip reading — replaced JSZip). Both are plain `npm install`
+> dependencies — no extra setup. The pdf.js **worker** is bundled by Vite as its own asset
+> (`dist/assets/pdf.worker.*.mjs`); it must ship alongside the rest of `dist/` (it already does via the
+> build/package scripts). `@zip.js/zip.js` runs without web workers, so it needs no extra asset.
 
-See **`ARCHITECTURE.md`** for the full picture.
+See **`ARCHITECTURE.md`** for the full picture, and **`docs/BATCH_VIEWER.md`** for the document‑viewer
+ingestion pipeline (lazy reader, split‑archive handling, GUID matching, IndexedDB cache).

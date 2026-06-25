@@ -14,9 +14,14 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, RotateCcw, RotateCw, Search, X } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// Bundle the pdf.js worker via Vite's `?worker` so it loads reliably in dev AND prod. The previous
+// `?url` + workerSrc approach let pdf.js fall back to a "fake worker" that dynamically *imports* the
+// worker URL — which fails to fetch after a Vite dependency re-optimization ("Setting up fake worker
+// failed: Failed to fetch dynamically imported module …pdf.worker.min.mjs?import"), breaking the viewer
+// mid-session. Providing a real Worker instance as workerPort avoids that fallback entirely.
+import PdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfjsWorker();
 const APP_BASE_URL = import.meta.env.BASE_URL || "/";
 const APP_ASSET_BASE = APP_BASE_URL.endsWith("/") ? APP_BASE_URL : `${APP_BASE_URL}/`;
 const PDFJS_WASM_URL = `${APP_ASSET_BASE}pdfjs/wasm/`;
@@ -810,6 +815,11 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
             <strong>{current?.label || "Document"}</strong>
             <span>
               {regions.length} field{regions.length === 1 ? "" : "s"}
+              {current?.approximate && (
+                <em className="dv-warn-badge" title="This document was matched by filename only because no GUID match was found — the rendered PDF may not be this exact document.">
+                  approximate match — verify document
+                </em>
+              )}
               {errorCount > 0 && <em className="dv-err-badge">{errorCount} region error{errorCount === 1 ? "" : "s"}</em>}
               {numPages > 1 && !pagesReliable && contentPages.size === 0 && (
                 <em className="dv-warn-badge">page data unreliable — shown on every page</em>

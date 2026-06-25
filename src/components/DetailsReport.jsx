@@ -21,7 +21,7 @@ import {
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { downloadCsv } from "../utils/csv.js";
 import DocumentViewer from "./DocumentViewer.jsx";
-import { findJsonFieldRegion, parseCaptureLocation, resolveDoc } from "../utils/batchImages.js";
+import { findJsonFieldRegion, parseCaptureLocation, resolveDoc, resolveDocDetailed } from "../utils/batchImages.js";
 import {
   buildDetailModel,
   countLineItems,
@@ -152,8 +152,19 @@ function rowRegions(row, doc) {
   return { capturedRegion, trueRegion };
 }
 
+// Identity a report row carries for matching its source PDF: the {batchId}/{docId} GUID pair is
+// authoritative; SourceDocId and InputFileName are fallbacks (filenames are NOT distinct).
+function docKeyOf(row) {
+  return {
+    inputFileName: row?.InputFileName,
+    sourceDocId: row?.SourceDocId,
+    docId: row?.DocId,
+    batchId: row?.BatchId
+  };
+}
+
 function rowHasLocatableRegion(imageIndex, row) {
-  const doc = resolveDoc(imageIndex, { inputFileName: row?.InputFileName, sourceDocId: row?.SourceDocId });
+  const doc = resolveDoc(imageIndex, docKeyOf(row));
   if (!doc) return false;
   const { capturedRegion, trueRegion } = rowRegions(row, doc);
   return Boolean(capturedRegion || trueRegion);
@@ -268,6 +279,7 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(() => savedState.page || 1);
   const [viewer, setViewer] = useState(null);
+  const [openingViewer, setOpeningViewer] = useState(false);
   const [model, setModel] = useState({
     allColumns: [],
     trainingPasses: [],
@@ -409,61 +421,73 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
   };
 
   // Whether a batch's document is available in the loaded images zip (cheap lookup on one row).
-  const batchHasImage = (sampleRow) =>
-    Boolean(imageIndex) &&
-    Boolean(resolveDoc(imageIndex, { inputFileName: sampleRow?.InputFileName, sourceDocId: sampleRow?.SourceDocId }));
+  const batchHasImage = (sampleRow) => Boolean(imageIndex) && Boolean(resolveDoc(imageIndex, docKeyOf(sampleRow)));
 
   // Build the DocumentViewer payload for a batch: every captured field grouped by its document,
-  // each resolved to a PDF in the zip, with parsed region boxes colored by status.
-  const buildViewerDocs = (batchId) => {
+  // each resolved to a PDF in the zip (by GUID pair, not filename), with parsed region boxes colored
+  // by status. Async because each matched doc's CapturedData/TrueData JSON is read lazily on open
+  // (huge archives don't pre-read tens of thousands of JSON blobs).
+  const buildViewerDocs = async (batchId) => {
     const batch = model.batches.find((item) => item.id === batchId);
     if (!batch) return [];
     const allRows = [...batch.rows, ...batch.lineItemRows];
     const groups = {};
     allRows.forEach((row) => {
-      const key = row.SourceDocId || row.InputFileName || "document";
+      // Group by the document's GUID so rows for distinct docs that happen to share a filename
+      // (e.g. several "generatedByQASuite.pdf") don't collapse into one viewer entry.
+      const key = row.DocId || row.SourceDocId || `${row.BatchId || ""}|${row.InputFileName || "document"}`;
       (groups[key] ||= []).push(row);
     });
-    return Object.values(groups)
-      .map((rows) => {
-        const sample = rows[0];
-        const doc = resolveDoc(imageIndex, { inputFileName: sample.InputFileName, sourceDocId: sample.SourceDocId });
-        if (!doc) return null;
-        const regions = rows
-          .map((row) => {
-            const { capturedRegion, trueRegion } = rowRegions(row, doc);
-            if (!capturedRegion && !trueRegion) return null;
-            const status = row.FieldStatus || row.Status || row.Result || "";
-            const kind = statusKind(status);
-            return {
-              name: row.FieldName,
-              value: row.CapturedValue || row.Value,
-              trueValue: row.TrueValue,
-              status,
-              kind,
-              captureRegion: regionWithField(capturedRegion, row),
-              trueRegion: trueRegion && !sameRegion(capturedRegion, trueRegion) ? regionWithField(trueRegion, row) : null
-            };
-          })
-          .filter(Boolean);
-        return { label: doc.fileName, doc, regions };
-      })
-      .filter(Boolean);
+
+    const built = [];
+    for (const rows of Object.values(groups)) {
+      const sample = rows[0];
+      const match = resolveDocDetailed(imageIndex, docKeyOf(sample));
+      if (!match) continue;
+      const { doc, approximate } = match;
+      await doc.loadMetadata?.(); // ensure JSON-region fallback is available before reading regions
+      const regions = rows
+        .map((row) => {
+          const { capturedRegion, trueRegion } = rowRegions(row, doc);
+          if (!capturedRegion && !trueRegion) return null;
+          const status = row.FieldStatus || row.Status || row.Result || "";
+          const kind = statusKind(status);
+          return {
+            name: row.FieldName,
+            value: row.CapturedValue || row.Value,
+            trueValue: row.TrueValue,
+            status,
+            kind,
+            captureRegion: regionWithField(capturedRegion, row),
+            trueRegion: trueRegion && !sameRegion(capturedRegion, trueRegion) ? regionWithField(trueRegion, row) : null
+          };
+        })
+        .filter(Boolean);
+      built.push({ label: doc.fileName, doc, regions, approximate });
+    }
+    return built;
   };
 
-  const openViewer = (batchId, focusRow = null) => {
-    const docs = buildViewerDocs(batchId);
-    if (!docs.length) return;
-    let initialDocIndex = 0;
-    let focusField = null;
-    if (focusRow) {
-      const target = String(focusRow.InputFileName || "").toLowerCase();
-      const targetDocId = String(focusRow.SourceDocId || "");
-      const idx = docs.findIndex((d) => (targetDocId && d.doc.docId === targetDocId) || d.label.toLowerCase() === target);
-      if (idx >= 0) initialDocIndex = idx;
-      focusField = focusRow.FieldName;
+  const openViewer = async (batchId, focusRow = null) => {
+    setOpeningViewer(true);
+    try {
+      const docs = await buildViewerDocs(batchId);
+      if (!docs.length) return;
+      let initialDocIndex = 0;
+      let focusField = null;
+      if (focusRow) {
+        const target = String(focusRow.InputFileName || "").toLowerCase();
+        const targetDocId = String(focusRow.DocId || focusRow.SourceDocId || "");
+        const idx = docs.findIndex((d) => (targetDocId && d.doc.docId === targetDocId) || d.label.toLowerCase() === target);
+        if (idx >= 0) initialDocIndex = idx;
+        focusField = focusRow.FieldName;
+      }
+      setViewer({ docs, initialDocIndex, focusField });
+    } catch (exception) {
+      console.warn("Could not open document viewer", exception?.message);
+    } finally {
+      setOpeningViewer(false);
     }
-    setViewer({ docs, initialDocIndex, focusField });
   };
 
   const toggleSort = (column) => {
@@ -755,6 +779,15 @@ export default function DetailsReport({ data, imageIndex = null, savedState = {}
           </tbody>
         </table>
       </section>
+
+      {openingViewer && !viewer && (
+        <div className="dv-opening-overlay">
+          <div className="dv-opening-card">
+            <span className="dv-spinner" />
+            Opening document…
+          </div>
+        </div>
+      )}
 
       {viewer && (
         <DocumentViewer

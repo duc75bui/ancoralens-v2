@@ -30,7 +30,7 @@ Two important properties:
 | Charts | Bespoke animated SVG (`AncoraCharts.jsx`) + Recharts 3 |
 | Motion | framer‑motion + custom `requestAnimationFrame` + `IntersectionObserver` reveals |
 | CSV | PapaParse |
-| Documents | pdf.js (`pdfjs-dist`) renders source pages in the in‑browser document viewer; `jszip` reads the `BatchData*.zip` export |
+| Documents | pdf.js (`pdfjs-dist`) renders source pages in the in‑browser document viewer; **`@zip.js/zip.js`** lazily reads the `BatchData*.zip` export (random‑access, never loads the whole multi‑GB archive); IndexedDB caches the doc index. See `docs/BATCH_VIEWER.md`. |
 | Icons | lucide‑react |
 | Server | Express 5, `mssql` (tedious), `@google/generative-ai` |
 | Build/Deploy | Vite build → unified Node server → IIS reverse proxy (Windows Server) |
@@ -153,7 +153,8 @@ stateDiagram-v2
 | `templateData` | **parsed** template‑matching model (or `{error}`) |
 | `trainingPassData` | `{ [passKey]: rows }` — per‑pass summary CSVs (`TrainingPass{N}_*.csv`), keyed by pass number |
 | `activePass` | the training‑pass name currently open in the per‑pass dashboard |
-| `imageIndex` | parsed `BatchData*.zip` doc index (`{ byFile, byDoc, docs }`) for the document viewer |
+| `imageIndex` | lazy `BatchData*.zip` doc index (`{ byBatchDoc, byDoc, byFile, byFileList, docs, close() }`) for the document viewer — see `docs/BATCH_VIEWER.md` |
+| `imageStatus` | background archive‑ingest progress (`{ phase, message, loaded, total, done, error, startedAt }`) driving the App‑level `ImageLoadBanner`; survives navigating away from Upload |
 | `sessionInfo` | `{ clientName, version, source:{ name, fileCount, kind } }` — drives the sidebar title and the dashboard's data‑source chip |
 | `viewMemory` | per‑view UI state (filters, expansion, page) persisted to `sessionStorage` |
 
@@ -203,7 +204,7 @@ subfolders; `webkitdirectory` includes nested files):
 | Vendor → `vendorData` | `*vendor*` (prefers `*report*`, else `*low_overall_accuracy*`) |
 | Template matching → `templateData` | `*template*` or `*region*` |
 | Per‑pass dashboards → `trainingPasses` | every `*trainingpass*.csv` **excluding** `*summary*`, keyed by pass number (`matchPassKey`) |
-| Document images → `imageIndex` | **any `.zip`** in the folder (any prefix, e.g. `BFS_batchData.zip`) — identified by its internal `Batches/.../InputFiles/*.pdf` structure, not its filename; parsed by `utils/batchImages.parseBatchZip`. Parsed in the **background** so a large archive doesn't delay the CSV views. |
+| Document images → `imageIndex` | **any `.zip`** (and its `.partN` segments) in the folder, any prefix (e.g. `BFS_batchData.zip`) — identified by its internal `Batches/.../InputFiles/*.pdf` structure, not its filename. Every distinct archive is indexed and **merged** (`mergeImageIndexes`). Detection + indexing starts **before** CSV parsing and runs in the **background**, so a large archive (or a CSV hiccup) never delays/blocks the views. See `docs/BATCH_VIEWER.md`. |
 | Session | `info.txt` (line 1 = client, line 2 = version); folder name from `webkitRelativePath` |
 
 > ⚠️ Ordering matters: the summary matcher **prefers `*Summary*`** so a per‑pass
@@ -218,12 +219,17 @@ rows, 3rd arg = pass key) and `"images"` (payload = doc index).
 
 ### Document images (BatchData zip → viewer)
 
-`utils/batchImages.js` reads the export zip **in the browser** (JSZip) and builds a doc
-index keyed by `InputFileName` **and** `docId` GUID, with a lazy `getArrayBuffer()` so PDF
-bytes load only when a viewer opens. `parseCaptureLocation(str, fallbackPage)` turns a CSV
-`CaptureLocation` into `{ page, left, top, right, bottom }`. The **Detailed Report** adds a
-"View document" action per batch (and click‑a‑field‑row to locate a region); `DocumentViewer`
-renders the page with pdf.js and overlays each field's box, colored by `statusKind`. See §7.5.
+`utils/batchImages.js` reads the export zip **in the browser** with **`@zip.js/zip.js`** over a
+file‑backed `Blob` — only central directories are read up front and each PDF/metadata JSON is pulled
+on demand via `blob.slice()`, so a **multi‑GB** archive never sits in memory. Real exports split a
+large set into a `.zip` + `.partN` files where **each part is its own complete zip holding a subset**
+of documents, so we read each segment and **merge** (auto‑falling back to concatenation for a true
+byte‑split). Documents are keyed by `{batchId}/{docId}` GUID (authoritative) with a flagged filename
+fallback; the right **combined multi‑page PDF** is selected per docId. A lightweight doc summary is
+cached in **IndexedDB** (`utils/idbCache.js`). The **Detailed Report** adds a "View document" action
+per batch (and click‑a‑field‑row to locate a region); `DocumentViewer` renders the page with pdf.js
+and overlays each field's box, colored by `statusKind`. **Full pipeline + rationale:
+`docs/BATCH_VIEWER.md`.** See also §7.5.
 
 ---
 
@@ -384,7 +390,8 @@ Real exports are often partial. The app never fabricates metrics:
 | `src/components/AncoraCharts.jsx` | Bespoke SVG chart primitives + hooks + shared tooltip |
 | `src/utils/csv.js` | PapaParse wrappers (UTF‑16 / BOM / `sep=` tolerant), CSV export |
 | `src/utils/parsers.js` | All report parsers + status taxonomy + `matchPassKey` |
-| `src/utils/batchImages.js` | Read `BatchData*.zip` (JSZip) → doc index; `parseCaptureLocation`; `resolveDoc` |
+| `src/utils/batchImages.js` | Lazy `BatchData*.zip` reader (`@zip.js/zip.js`, per‑segment) → doc index; GUID matching (`resolveDoc`/`resolveDocDetailed`); combined‑PDF selection; `parseCaptureLocation`; `mergeImageIndexes`; `archiveSignature`. See `docs/BATCH_VIEWER.md` |
+| `src/utils/idbCache.js` | Minimal IndexedDB key/value store caching the archive doc index (not PDF bytes) |
 | `server/index.js` | Express server: static UI + SQL/AI API |
 | `vite.config.js` | Vite config + dev `/api` proxy (port **5174**, `strictPort`) |
 | `scripts/package.mjs` | Build + assemble + zip the deploy bundle |

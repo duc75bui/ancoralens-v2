@@ -7,9 +7,18 @@ To build the application, you need the following installed on your build machine
 *   **Node.js**: Version 18 or higher (LTS recommended). [Download Here](https://nodejs.org/)
 *   **NPM**: Included with Node.js.
 
-> All runtime libraries (including `pdfjs-dist` and `jszip`, used by the in‑browser document
-> viewer) install with a plain `npm install` — there are **no extra components to install**.
+> All runtime libraries (including `pdfjs-dist` and **`@zip.js/zip.js`**, used by the in‑browser
+> document viewer) install with a plain `npm install` — there are **no extra components to install**.
 > The document viewer, CSV parsing, and zip reading are entirely client‑side.
+
+> **Browser requirements (document viewer).** The viewer reads multi‑GB `BatchData` archives
+> **in the browser** by streaming individual PDFs on demand, and caches a small document index in
+> **IndexedDB**. Target a modern evergreen browser (Chromium/Edge/Firefox) with **IndexedDB** and the
+> **File API** available — i.e. **not** a hardened private/incognito profile that blocks IndexedDB
+> (the cache silently degrades to "no cache", which still works but re‑scans each load). Folder
+> auto‑load uses `webkitdirectory` (Chromium/Edge/Firefox desktop). Nothing is uploaded to the server;
+> archives are read locally. For best performance, point the picker at **locally‑stored** files —
+> on‑demand cloud‑synced files (OneDrive "files on demand") force a full download per part and are slow.
 
 ## 2. Build Instructions
 The application parses CSVs, renders source PDFs, and reads BatchData zips **entirely in the
@@ -21,9 +30,17 @@ dashboards, detailed report, and document viewer.
 > features, you can serve `dist/` as plain static files. If you do, run the unified Node
 > server (it serves `dist/` **and** `/api` on one port — see `DEPLOY_IIS.md`).
 
-> **pdf.js worker asset:** the build emits `dist/assets/pdf.worker.*.mjs` (the pdf.js web
-> worker). It must be deployed alongside the other `dist/assets/*` files (the build and
-> `npm run package` already include it) — without it the document viewer cannot render PDFs.
+> **pdf.js worker asset:** the build emits the pdf.js web worker as a bundled chunk
+> `dist/assets/pdf.worker.min-*.js` (Vite `?worker`). It must be deployed alongside the other
+> `dist/assets/*` files (the build and `npm run package` already include it) — without it the document
+> viewer cannot render PDFs. It is now a plain `.js` file, so the `.mjs` MIME caveat below no longer
+> applies to the worker (it's always served correctly).
+
+> **Static viewer assets (`public/`):** the build copies `public/pdfjs/` (pdf.js WASM) and
+> `public/ocr/` (Tesseract worker/core/lang, used by the viewer's "Find pages") into `dist/`. Deploy
+> the whole `dist/` tree so `dist/pdfjs/*` and `dist/ocr/*` are served — these are fetched at runtime
+> by the document viewer. `@zip.js/zip.js` runs **without** web workers (`useWebWorkers:false`), so it
+> needs **no** extra worker asset or MIME/CSP carve‑out.
 
 ### Step 2.1: Production Build
 Open your terminal in the project root (`interactive-csv-dashboard/`) and run:
@@ -134,6 +151,10 @@ This application is built with:
 *   **PapaParse**: High-performance CSV parsing.
 *   **Recharts**: Data visualization library.
 *   **Lucide React**: Icon set.
+*   **pdf.js (`pdfjs-dist`)**: renders source PDF pages in the document viewer (client-side).
+*   **`@zip.js/zip.js`**: random-access, lazy reader for the multi-GB `BatchData` archive (client-side;
+    streams individual PDFs, never loads the whole archive). Replaced JSZip. See `docs/BATCH_VIEWER.md`.
+*   **IndexedDB** (browser built-in): caches the archive's document index (not PDF bytes).
 
 There are **NO** server-side dependencies for the core dashboard (no Database, no API server required). All CSV processing happens in the user's browser.
 
@@ -272,4 +293,10 @@ The server blocks dangerous operations:
 | SQL "Login failed" | Verify connection string and credentials |
 | SQL "Cannot connect" | Check SQL Server is accessible from VM, firewall rules |
 | SQL "TrustServerCertificate" error | Add `TrustServerCertificate=true;` to connection string |
+| Document viewer: PDF won't render | Ensure `dist/assets/pdf.worker.*.mjs` and `dist/pdfjs/*` are deployed (and `.mjs` is served — see §3 Option A) |
+| Viewer "Find pages" (OCR) does nothing | Ensure `dist/ocr/*` (Tesseract worker/core/lang) is deployed |
+| Archive ingest is very slow / banner stuck for minutes | Use locally-stored files, not OneDrive "files on demand"; the index also caches in IndexedDB so the second load is faster |
+| Banner says "N unreadable segments skipped" | One or more `.partN` files is a headless fragment (no central directory) in the source export — its documents can't be indexed; re-export each part as a self-contained zip for full coverage |
+| "approximate match — verify document" in viewer | The document was matched by filename (non-distinct) because no GUID match was found; confirm the rendered PDF is the right document |
+| Re-loading the same folder doesn't reuse the index | IndexedDB is unavailable (private/incognito or blocked) — ingest still works, just without the cache |
 

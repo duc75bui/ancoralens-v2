@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@zip.js/zip.js": "^2.8.26",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "framer-motion": "^12.23.26",
@@ -25,7 +26,8 @@
     "pdfjs-dist": "^6.0.227",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "recharts": "^3.6.0"
+    "recharts": "^3.6.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

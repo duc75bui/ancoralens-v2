@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local real-world QA data; keep out of source control.
+test-artifacts/WD Larson Training Dataset/
+.playwright-cli/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

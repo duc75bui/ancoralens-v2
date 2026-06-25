@@ -18,6 +18,7 @@ import {
   Upload,
   Users
 } from "lucide-react";
+import { APP_BUILD } from "../appBuild.js";
 
 function NavButton({ icon, label, active, disabled, onClick }) {
   return (
@@ -57,6 +58,7 @@ export default function Sidebar({
           )}
         </div>
         <p>{sessionInfo?.version || "CSV Intelligence"}</p>
+        <span className="app-build">APP BUILD: {APP_BUILD}</span>
       </button>
 
       <nav className="sidebar-nav">
