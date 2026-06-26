@@ -7,11 +7,12 @@ The installer downloads and configures everything it needs.
 
 ## TL;DR
 
-1. Build the deploy bundle (on your dev machine):
+1. Build the deploy bundle (on your dev machine), from the project root in a terminal (PowerShell is fine):
    ```powershell
    npm run package
    ```
-   → `release/ancoralens-site-v<version>.zip`
+   This creates the deployable zip in the project's `release\` folder, e.g.
+   `release\ancoralens-site-v1.0.0.zip` (the version number comes from `package.json`).
 2. Copy that zip to the Windows Server and unzip it.
 3. **Right-click `Install-AncoraLens.cmd` → "Run as administrator".**
 
@@ -60,6 +61,9 @@ Pass parameters through the launcher, or run the `.ps1` directly in an elevated 
 # custom install location + ports
 Install-AncoraLens.cmd -InstallPath C:\apps\AncoraLens -HttpPort 80 -NodePort 8080
 
+# co-host on port 80 with EXISTING IIS sites, by hostname (does NOT stop the other sites)
+Install-AncoraLens.cmd -HostHeader ancoralens.example.com
+
 # assume Node / Rewrite / ARR are already installed (skip those downloads)
 Install-AncoraLens.cmd -SkipPrereqs
 
@@ -72,12 +76,29 @@ Install-AncoraLens.cmd -Uninstall
 | `-InstallPath` | `C:\inetpub\AncoraLens` | where the app is deployed |
 | `-SiteName` | `AncoraLens` | IIS site + app-pool name |
 | `-HttpPort` | `80` | public IIS port |
+| `-HostHeader` | _(none)_ | bind the site to this hostname so it **shares** the port with other IIS sites instead of taking it over |
 | `-NodePort` | `8080` | internal Node service port |
 | `-SourcePath` | parent of the script | bundle root (has `dist\` + `server\`) |
 | `-NodeVersion` | `20.18.1` | Node LTS to install if missing |
 | `-ServiceName` | `AncoraLensNode` | Windows service name |
 | `-SkipPrereqs` | off | skip Node / URL Rewrite / ARR installs |
 | `-Uninstall` | off | remove everything (keep with `-KeepFiles`) |
+
+### Sharing port 80 with existing IIS sites (`-HostHeader`)
+
+By default the installer assumes it owns the HTTP port: if another site (e.g. **"Default Web Site"**)
+is bound to it **without** a host header, that site is **stopped** to free the port.
+
+On a server hosting other sites you want to keep running, pass `-HostHeader` instead. IIS then routes
+by the `Host:` header, so multiple sites coexist on the same port:
+
+```powershell
+Install-AncoraLens.cmd -HostHeader ancoralens.example.com
+```
+
+This creates the binding `*:80:ancoralens.example.com`, leaves the other sites untouched, and the app
+answers only for that hostname. **You must point that hostname at the server** (DNS, or the server's
+`C:\Windows\System32\drivers\etc\hosts` file for a quick test). Browse `http://ancoralens.example.com/`.
 
 ---
 

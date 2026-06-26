@@ -32,6 +32,7 @@ param(
   [string] $InstallPath = "C:\inetpub\AncoraLens",
   [string] $SiteName    = "AncoraLens",
   [int]    $HttpPort    = 80,
+  [string] $HostHeader  = "",                # e.g. ancoralens.example.com -> share the port by hostname
   [int]    $NodePort    = 8080,
   [string] $SourcePath  = "",                # bundle root (has dist\ + server\); default = parent of this script
   [string] $NodeVersion = "20.18.1",         # Node LTS to install if Node is missing
@@ -278,29 +279,44 @@ function Configure-Service-And-Site($nssm) {
 
   Import-Module WebAdministration
 
-  # Free the HTTP port if another site (e.g. "Default Web Site") is bound to it - otherwise site
-  # creation / start fails with a binding conflict. We STOP (not remove) the conflicting site.
-  try {
-    Get-Website | Where-Object { $_.Name -ne $SiteName } | ForEach-Object {
-      $hit = $_.Bindings.Collection | Where-Object { $_.bindingInformation -match ":${HttpPort}:" }
-      if ($hit) { Warn "Stopping '$($_.Name)' (was bound to port $HttpPort)"; Stop-Website -Name $_.Name -ErrorAction SilentlyContinue }
-    }
-  } catch { Warn "Could not check for port-$HttpPort conflicts: $_" }
+  if ($HostHeader) {
+    # Host-header mode: share port $HttpPort with other sites by hostname. Multiple IIS sites can bind
+    # the same port as long as each uses a distinct host header, so we leave existing sites running.
+    Info "Host-header mode: site answers for '$HostHeader' on port $HttpPort (existing sites left running)."
+  } else {
+    # Default mode: this site owns the port. Free it if another site (e.g. "Default Web Site") holds it
+    # - otherwise New-Website / Start-Website fails with a binding conflict. STOP (not remove) it.
+    try {
+      Get-Website | Where-Object { $_.Name -ne $SiteName } | ForEach-Object {
+        $hit = $_.Bindings.Collection | Where-Object { $_.bindingInformation -match ":${HttpPort}:" -and $_.bindingInformation -notmatch ":${HttpPort}:.+" }
+        if ($hit) { Warn "Stopping '$($_.Name)' (was bound to port $HttpPort with no host header)"; Stop-Website -Name $_.Name -ErrorAction SilentlyContinue }
+      }
+    } catch { Warn "Could not check for port-$HttpPort conflicts: $_" }
+  }
 
   $pool = "$SiteName-pool"
   if (-not (Test-Path "IIS:\AppPools\$pool")) { New-WebAppPool -Name $pool | Out-Null }
   Set-ItemProperty "IIS:\AppPools\$pool" -Name managedRuntimeVersion -Value ""   # No Managed Code
   Ok "App pool '$pool' ready."
 
+  $bindingInfo = "*:${HttpPort}:$HostHeader"   # host header is "" in default mode
   if (Test-Path "IIS:\Sites\$SiteName") {
     Info "Updating existing site '$SiteName' ..."
     Set-ItemProperty "IIS:\Sites\$SiteName" -Name physicalPath -Value $InstallPath
     Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationPool -Value $pool
-    # ensure the HTTP binding/port matches
-    try { Set-WebBinding -Name $SiteName -BindingInformation "*:${HttpPort}:" -PropertyName Port -Value $HttpPort -ErrorAction SilentlyContinue } catch {}
+    # Make sure the desired http binding exists (add it if missing); leave any others in place.
+    $existing = Get-WebBinding -Name $SiteName -Protocol "http" -ErrorAction SilentlyContinue | Where-Object { $_.bindingInformation -eq $bindingInfo }
+    if (-not $existing) {
+      try { New-WebBinding -Name $SiteName -Protocol "http" -IPAddress "*" -Port $HttpPort -HostHeader $HostHeader -ErrorAction Stop }
+      catch { Warn "Could not add http binding '$bindingInfo': $_" }
+    }
   } else {
-    New-Website -Name $SiteName -Port $HttpPort -PhysicalPath $InstallPath -ApplicationPool $pool | Out-Null
-    Ok "Created site '$SiteName' on port $HttpPort."
+    if ($HostHeader) {
+      New-Website -Name $SiteName -Port $HttpPort -HostHeader $HostHeader -PhysicalPath $InstallPath -ApplicationPool $pool | Out-Null
+    } else {
+      New-Website -Name $SiteName -Port $HttpPort -PhysicalPath $InstallPath -ApplicationPool $pool | Out-Null
+    }
+    Ok "Created site '$SiteName' (binding *:${HttpPort}:$HostHeader)."
   }
   Start-Website -Name $SiteName -ErrorAction SilentlyContinue
   Ok "Site '$SiteName' started."
@@ -322,18 +338,41 @@ function Open-Firewall {
 }
 
 # --- Step: health --------------------------------------------------------------
+# Returns the HTTP status (or 0). Sets the Host header via HttpWebRequest so a host-header IIS binding
+# routes to our site - Invoke-WebRequest in PowerShell 5.1 can't reliably override the Host header.
+function Get-HttpStatus($url, $hostHeader) {
+  try {
+    $req = [System.Net.HttpWebRequest]::Create($url)
+    $req.Timeout = 5000
+    $req.AllowAutoRedirect = $true
+    if ($hostHeader) { $req.Host = $hostHeader }
+    $resp = $req.GetResponse()
+    $code = [int]$resp.StatusCode
+    $resp.Close()
+    return $code
+  } catch [System.Net.WebException] {
+    if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }
+    return 0
+  } catch { return 0 }
+}
+
 function Test-Health {
   Step "9/9  Verifying deployment"
-  $url = "http://localhost:$HttpPort/api/health"
+  $nodeUrl = "http://localhost:$NodePort/api/health"   # backend directly (unambiguous)
+  $iisUrl  = "http://localhost:$HttpPort/api/health"   # through IIS (+ host header if configured)
   for ($i = 1; $i -le 12; $i++) {
-    try {
-      $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
-      if ($r.StatusCode -eq 200) { Ok "Health check passed: $url"; return $true }
-    } catch { }
+    $node = Get-HttpStatus $nodeUrl $null
+    $iis  = Get-HttpStatus $iisUrl  $HostHeader
+    if ($node -eq 200 -and $iis -eq 200) {
+      $via = if ($HostHeader) { "host '$HostHeader'" } else { "port $HttpPort" }
+      Ok "Health check passed: Node :$NodePort and IIS via $via."
+      return $true
+    }
     Start-Sleep -Seconds 2
   }
-  Warn "Health check has not passed yet at $url. The service may still be warming up."
+  Warn "Health check has not passed yet (Node and/or IIS). The service may still be warming up."
   Warn "Check:  Get-Service $ServiceName   and   $InstallPath\logs\service.err.log"
+  if ($HostHeader) { Warn "In host-header mode, make sure '$HostHeader' resolves to this server (DNS or hosts file)." }
   return $false
 }
 
@@ -364,7 +403,9 @@ function Invoke-Uninstall {
 # --- Main ----------------------------------------------------------------------
 Write-Host ""
 Write-Host "  AncoraLens - one-click Windows/IIS deployment" -ForegroundColor White
-Write-Host "  InstallPath=$InstallPath  Site=$SiteName  HttpPort=$HttpPort  NodePort=$NodePort" -ForegroundColor DarkGray
+$hdrLine = "  InstallPath=$InstallPath  Site=$SiteName  HttpPort=$HttpPort  NodePort=$NodePort"
+if ($HostHeader) { $hdrLine += "  HostHeader=$HostHeader" }
+Write-Host $hdrLine -ForegroundColor DarkGray
 
 if ($Uninstall) { Invoke-Uninstall; return }
 
@@ -381,9 +422,14 @@ $healthy = Test-Health
 Step "Done"
 Ok "AncoraLens deployed."
 Write-Host ""
-Write-Host "  Browse:        http://localhost:$HttpPort/" -ForegroundColor White
-Write-Host "  API health:    http://localhost:$HttpPort/api/health" -ForegroundColor White
+$portSuffix = if ($HttpPort -eq 80) { "" } else { ":$HttpPort" }
+$browseHost = if ($HostHeader) { $HostHeader } else { "localhost" }
+Write-Host "  Browse:        http://$browseHost$portSuffix/" -ForegroundColor White
+Write-Host "  API health:    http://$browseHost$portSuffix/api/health" -ForegroundColor White
 Write-Host "  Service:       $ServiceName  (auto-start)   logs: $InstallPath\logs\" -ForegroundColor White
 Write-Host ""
+if ($HostHeader) {
+  Warn "Host-header mode: point DNS (or the server's hosts file) for '$HostHeader' at this server. Other IIS sites on port $HttpPort keep running."
+}
 if (-not $healthy) { Warn "Site responded slowly - give the service a few seconds, then refresh." }
 Warn "For production: add an HTTPS (443) binding with a certificate, and open your network/NSG for the public port."
