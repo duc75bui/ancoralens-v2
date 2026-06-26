@@ -104,6 +104,28 @@ exec node server/index.js
 
 fs.writeFileSync(path.join(stage, "start.cmd"), startCmd);
 fs.writeFileSync(path.join(stage, "start.sh"), startSh);
+
+// One-click Windows/IIS deployment launcher at the bundle root. Self-elevates (UAC) and runs the
+// self-contained orchestrator in iis\Deploy-AncoraLens.ps1 (installs IIS/Node/URL Rewrite/ARR/NSSM,
+// deploys, registers the Node service, configures the IIS reverse proxy + firewall). See iis\.
+const oneClickCmd = `@echo off
+REM AncoraLens - ONE-CLICK Windows/IIS deploy. Double-click (it self-elevates via UAC).
+REM Advanced: pass through args, e.g.  Install-AncoraLens.cmd -HttpPort 8081
+REM Uninstall:  Install-AncoraLens.cmd -Uninstall
+setlocal
+net session >nul 2>&1
+if %errorlevel% NEQ 0 (
+  echo Requesting administrator privileges...
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
+  exit /b
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0iis\\Deploy-AncoraLens.ps1" %*
+echo.
+echo Press any key to close...
+pause >nul
+`;
+fs.writeFileSync(path.join(stage, "Install-AncoraLens.cmd"), oneClickCmd);
+copyIfExists(path.join(root, "DEPLOY_ONECLICK.md"), path.join(stage, "DEPLOY_ONECLICK.md"));
 try {
   fs.chmodSync(path.join(stage, "start.sh"), 0o755);
 } catch {
@@ -139,11 +161,18 @@ console.log(`
   Bundle folder : ${path.relative(root, stage)}
   Archive       : ${path.relative(root, archive)}  (${sizeMB} MB)
 
-  Hand the archive to CloudOps. On the Azure VM (Node 18+):
-    1. unzip ${name}.zip
-    2. cd server && npm ci --omit=dev
-    3. (from the bundle root) set PORT=8080 and run:  node server/index.js
+  Hand the archive to whoever runs the server.
+
+  ONE-CLICK (Windows Server / IIS): unzip, then right-click
+    Install-AncoraLens.cmd -> "Run as administrator".
+  It installs IIS + Node + URL Rewrite + ARR + NSSM, deploys, registers the
+  Node Windows service, and configures the IIS reverse proxy + firewall.
+  See DEPLOY_ONECLICK.md.
+
+  MANUAL / non-IIS (Node 18+): unzip, then
+    1. cd server && npm ci --omit=dev
+    2. (from the bundle root) set PORT=8080 and run:  node server/index.js
        — or just run start.cmd (Windows) / ./start.sh (Linux)
 
-  Full instructions are in DEPLOY.md inside the bundle.
+  Full instructions: DEPLOY_ONECLICK.md (one-click), DEPLOY.md / DEPLOY_IIS.md (manual).
 `);

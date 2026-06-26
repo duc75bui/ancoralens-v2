@@ -77,7 +77,10 @@ and seeded region errors). See `test-artifacts/README.txt`.
 
 - **`ARCHITECTURE.md`** — system architecture, diagrams, data model, module reference (start here).
 - **`CHANGELOG.md`** — recent feature changes mapped to files (read this to catch up fast).
-- **`DEPLOY_IIS.md`** — deploy to IIS on Windows Server (reverse proxy + scripts).
+- **`DEPLOY_ONECLICK.md`** — **one-click** Windows/IIS deploy: `npm run package`, then right-click
+  `Install-AncoraLens.cmd` → *Run as administrator* (installs IIS + Node + URL Rewrite + ARR + NSSM,
+  deploys, registers the Node service, configures the reverse proxy + firewall).
+- **`DEPLOY_IIS.md`** — manual IIS deploy on Windows Server (reverse proxy + scripts).
 - **`DEPLOY_AZURE_VM.md`** — generic Node‑service deployment.
 - **In‑app Documentation page** — the field‑status / error‑type glossary for report data.
 

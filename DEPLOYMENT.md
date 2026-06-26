@@ -64,6 +64,13 @@ This will create a `dist/` folder containing the optimized production files:
 
 ## 3. Deployment Options
 
+> **Fastest path — one-click (Windows Server / IIS):** run `npm run package`, copy the resulting
+> `release/ancoralens-site-v<version>.zip` to the server, unzip, and right-click
+> **`Install-AncoraLens.cmd` → "Run as administrator"**. It installs IIS + Node + URL Rewrite + ARR +
+> NSSM, deploys the app, registers the Node Windows service, and configures the IIS reverse proxy +
+> firewall — no manual steps. Full details in **`DEPLOY_ONECLICK.md`**. The manual options below remain
+> available for custom setups.
+
 ### Option A: Hosting on Windows Server (IIS)
 Since this is a Windows environment, IIS is a common choice.
 

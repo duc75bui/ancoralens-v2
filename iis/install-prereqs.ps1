@@ -7,6 +7,7 @@
 $ErrorActionPreference = "Stop"
 function Info($m) { Write-Host "[*] $m"  -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "[OK] $m" -ForegroundColor Green }
+function Warn($m) { Write-Host "[!] $m"  -ForegroundColor Yellow }
 
 $rewriteDll = "$env:windir\System32\inetsrv\rewrite.dll"
 $arrDll     = "$env:windir\System32\inetsrv\requestRouter.dll"
