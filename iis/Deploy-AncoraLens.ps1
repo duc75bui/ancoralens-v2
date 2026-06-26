@@ -136,20 +136,28 @@ function Ensure-RewriteArr {
   $rewriteDll = "$env:windir\System32\inetsrv\rewrite.dll"
   $arrDll     = "$env:windir\System32\inetsrv\requestRouter.dll"
 
+  $installed = $false
   if (Test-Path $rewriteDll) { Ok "URL Rewrite already present." }
   else {
     $f = Join-Path $Work "rewrite_amd64_en-US.msi"
     Download-File "URL Rewrite 2.1" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" $f
     Install-Msi "URL Rewrite 2.1" $f
+    $installed = $true
   }
   if (Test-Path $arrDll) { Ok "ARR already present." }
   else {
     $f = Join-Path $Work "requestRouter_amd64.msi"
     Download-File "Application Request Routing 3.0" "https://download.microsoft.com/download/E/9/8/E9849D6A-020E-47E4-9FD0-A023E99B54EB/requestRouter_amd64.msi" $f
     Install-Msi "Application Request Routing 3.0" $f
+    $installed = $true
   }
-  Info "Restarting IIS so the new native modules load ..."
-  iisreset | Out-Null
+  # Only bounce IIS if we actually installed a native module - never disrupt existing sites needlessly.
+  if ($installed) {
+    Info "Restarting IIS so the new native modules load ..."
+    iisreset | Out-Null
+  } else {
+    Ok "Rewrite + ARR already installed - no IIS restart needed."
+  }
   if (-not (Test-Path $rewriteDll) -or -not (Test-Path $arrDll)) { throw "URL Rewrite/ARR still missing after install." }
   Ok "URL Rewrite + ARR ready."
 }
