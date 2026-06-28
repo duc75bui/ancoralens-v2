@@ -1845,6 +1845,8 @@ code {
 .docviewer-stage { flex: 1; overflow: auto; padding: 18px; display: flex; justify-content: center; background: var(--bg-surface); }
 .dv-status { display: flex; align-items: center; gap: 9px; padding: 40px; color: var(--text-secondary); font-size: .85rem; }
 .dv-status.error { color: var(--accent-danger, #ef4444); }
+.dv-status-text { display: flex; flex-direction: column; gap: 6px; }
+.dv-status-hint { max-width: 420px; font-size: .72rem; line-height: 1.45; color: var(--text-muted); }
 .dv-canvas-wrap { position: relative; line-height: 0; box-shadow: 0 10px 30px -12px rgba(0,0,0,.35); }
 .dv-canvas { display: block; max-width: 100%; height: auto; }
 .dv-overlay { position: absolute; inset: 0; pointer-events: none; }

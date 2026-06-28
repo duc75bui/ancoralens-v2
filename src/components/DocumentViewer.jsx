@@ -515,6 +515,7 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
   const [findStatus, setFindStatus] = useState("");
   const [blankBoxKeys, setBlankBoxKeys] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
+  const [loadElapsed, setLoadElapsed] = useState(0);
   const [error, setError] = useState("");
   const [layout, setLayout] = useState({
     ready: false,
@@ -552,6 +553,19 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Elapsed-time counter while a document is loading, so a slow extract (a large archive on cloud/
+  // network storage can take a while) shows progress instead of a bare, ambiguous spinner.
+  useEffect(() => {
+    if (!loading) {
+      setLoadElapsed(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const tick = () => setLoadElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    const handle = window.setInterval(tick, 1000);
+    return () => window.clearInterval(handle);
+  }, [loading, docIndex]);
 
   // Load the selected document's PDF; default the page to the focused field's page.
   useEffect(() => {
@@ -909,7 +923,16 @@ export default function DocumentViewer({ docs = [], initialDocIndex = 0, focusFi
         <div className="docviewer-stage">
           {loading && (
             <div className="dv-status">
-              <LoaderCircle className="spin" size={22} /> Loading document…
+              <LoaderCircle className="spin" size={22} />
+              <div className="dv-status-text">
+                <span>Loading document{loadElapsed > 0 ? ` — ${loadElapsed}s` : "…"}</span>
+                {loadElapsed >= 20 && (
+                  <span className="dv-status-hint">
+                    Still working (no timeout). Large archives on cloud/network storage (e.g. OneDrive
+                    "files on demand") can take a while — copying the folder to a local drive is much faster.
+                  </span>
+                )}
+              </div>
             </div>
           )}
           {error && (
