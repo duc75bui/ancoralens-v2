@@ -256,7 +256,13 @@ export function parseSummaryMetrics(summaryRows = [], detailRows = []) {
     let section = "general";
 
     summaryRows.forEach((row) => {
-      const values = Array.isArray(row) ? row : Object.values(row);
+      // The summary CSV is parsed with a 2-column "Name,Value" header, but some sections (notably the
+      // per-pass "TrainingPass,FieldAccuracy,TotalBatches,ExBatches" table) have MORE columns. PapaParse
+      // collects those overflow columns into a nested `__parsed_extra` array, so we flatten any nested
+      // arrays back into a flat positional list — otherwise TotalBatches/ExBatches read as garbage
+      // (e.g. "345","6" collapsing to 3456 / undefined).
+      const raw = Array.isArray(row) ? row : Object.values(row);
+      const values = raw.flatMap((value) => (Array.isArray(value) ? value : [value]));
       if (values.length < 2) return;
 
       const rawLabel = String(values[0] ?? "").trim();
